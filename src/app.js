@@ -52,6 +52,23 @@ function formatTime(seconds) {
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
+function formatTimecode(seconds) {
+  const value = Math.max(0, Math.round((Number(seconds) || 0) * 10) / 10);
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const remainder = (value % 60).toFixed(1).padStart(4, "0");
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${remainder}`;
+}
+
+function parseTimecode(value) {
+  const parts = String(value || "").trim().split(":");
+  if (!parts.length || parts.length > 3 || parts.some((part) => part === "" || !Number.isFinite(Number(part)))) return NaN;
+  if (parts.some((part) => Number(part) < 0)) return NaN;
+  if (parts.length === 1) return Number(parts[0]);
+  if (parts.length === 2) return Number(parts[0]) * 60 + Number(parts[1]);
+  return Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
+}
+
 function formatDate(value) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-AU", { dateStyle: "medium" }).format(new Date(value));
@@ -456,14 +473,30 @@ function renderEditor() {
         ${video.readyToStream ? "" : `<div class="status-banner info" style="margin-bottom:20px"><span>Cloudflare is processing this video (${escapeHtml(video.status?.pctComplete || "0")}% complete).</span><button class="button button-secondary button-small" id="check-status">Check status</button></div>`}
         <div class="editor-layout">
           <div>
-            ${state.playback?.iframeUrl ? `<iframe class="player-frame" src="${escapeHtml(state.playback.iframeUrl)}" title="Video preview" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>` : `<div class="player-placeholder"><div><span class="loading"></span><p>${video.readyToStream ? "Preparing secure preview…" : "Preview appears when processing is complete."}</p></div></div>`}
+            ${state.playback?.iframeUrl ? `<iframe class="player-frame" id="stream-player" src="${escapeHtml(state.playback.iframeUrl)}" title="Video preview" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>` : `<div class="player-placeholder"><div><span class="loading"></span><p>${video.readyToStream ? "Preparing secure preview…" : "Preview appears when processing is complete."}</p></div></div>`}
             <div class="tool-card" style="margin-top:18px">
-              <h3>Trim range <span class="muted" id="clip-length">${formatTime(duration)}</span></h3>
+              <h3>Trim range <span class="trim-duration" id="clip-length">${formatTimecode(duration)}</span></h3>
               <p class="muted">An edited copy is created; the original remains in the library.</p>
-              <div class="time-grid">
-                <label class="field"><span>Start time (seconds)</span><input id="trim-start" type="number" min="0" max="${duration}" step="0.1" value="0"></label>
-                <label class="field"><span>End time (seconds)</span><input id="trim-end" type="number" min="0.1" max="${duration}" step="0.1" value="${duration}"></label>
+              <div class="trim-summary" aria-live="polite">
+                <span>Playhead <strong id="playhead-time">${formatTimecode(0)}</strong></span>
+                <span>Selected <strong id="selected-time">${formatTimecode(duration)}</strong></span>
               </div>
+              <div class="trim-timeline" id="trim-timeline">
+                <div class="trim-track"><span class="trim-selection" id="trim-selection"></span><span class="trim-playhead" id="trim-playhead"></span></div>
+                <input class="trim-range trim-range-start" id="trim-start-range" type="range" min="0" max="${duration}" step="0.1" value="0" aria-label="Trim start">
+                <input class="trim-range trim-range-end" id="trim-end-range" type="range" min="0" max="${duration}" step="0.1" value="${duration}" aria-label="Trim end">
+              </div>
+              <div class="trim-scale"><span>${formatTimecode(0)}</span><span>${formatTimecode(duration)}</span></div>
+              <div class="trim-actions button-row">
+                <button class="button button-secondary button-small" id="set-trim-start" type="button">Set start at playhead</button>
+                <button class="button button-secondary button-small" id="set-trim-end" type="button">Set end at playhead</button>
+                <button class="button button-quiet button-small" id="preview-trim" type="button" ${state.playback?.iframeUrl ? "" : "disabled"}>Preview selection</button>
+              </div>
+              <div class="time-grid trim-timecodes">
+                <label class="field"><span>Start time</span><input id="trim-start" inputmode="decimal" value="${formatTimecode(0)}" aria-describedby="timecode-help"></label>
+                <label class="field"><span>End time</span><input id="trim-end" inputmode="decimal" value="${formatTimecode(duration)}" aria-describedby="timecode-help"></label>
+              </div>
+              <p class="timecode-help" id="timecode-help">Timecode format: HH:MM:SS.s. Use the arrow keys on either timeline handle for fine adjustments.</p>
               <button class="button button-primary" id="create-clip" data-busy ${video.readyToStream ? "" : "disabled"}>Create edited copy</button>
             </div>
           </div>
@@ -508,9 +541,90 @@ function editorValues() {
 function bindEditor(duration) {
   const start = document.querySelector("#trim-start");
   const end = document.querySelector("#trim-end");
-  const updateLength = () => document.querySelector("#clip-length").textContent = formatTime(Math.max(0, Number(end.value) - Number(start.value)));
-  start.addEventListener("input", updateLength);
-  end.addEventListener("input", updateLength);
+  const startRange = document.querySelector("#trim-start-range");
+  const endRange = document.querySelector("#trim-end-range");
+  const selection = document.querySelector("#trim-selection");
+  const playheadMarker = document.querySelector("#trim-playhead");
+  const timeline = document.querySelector("#trim-timeline");
+  const minimumClip = Math.min(0.1, duration);
+  let playhead = 0;
+  let player = null;
+
+  const updatePlayhead = (value) => {
+    playhead = Math.min(duration, Math.max(0, Number(value) || 0));
+    playheadMarker.style.left = `${(playhead / duration) * 100}%`;
+    document.querySelector("#playhead-time").textContent = formatTimecode(playhead);
+  };
+
+  const updateTrim = (changed = "start") => {
+    let startValue = Math.min(duration, Math.max(0, Number(startRange.value)));
+    let endValue = Math.min(duration, Math.max(0, Number(endRange.value)));
+    if (endValue - startValue < minimumClip) {
+      if (changed === "end") startValue = Math.max(0, endValue - minimumClip);
+      else endValue = Math.min(duration, startValue + minimumClip);
+    }
+    startRange.value = startValue;
+    endRange.value = endValue;
+    start.value = formatTimecode(startValue);
+    end.value = formatTimecode(endValue);
+    selection.style.left = `${(startValue / duration) * 100}%`;
+    selection.style.width = `${((endValue - startValue) / duration) * 100}%`;
+    const selected = endValue - startValue;
+    document.querySelector("#clip-length").textContent = formatTimecode(selected);
+    document.querySelector("#selected-time").textContent = formatTimecode(selected);
+  };
+
+  const commitTimecode = (input, range, changed) => {
+    const parsed = parseTimecode(input.value);
+    if (!Number.isFinite(parsed)) {
+      input.value = formatTimecode(Number(range.value));
+      return toast("Enter a timecode such as 00:01:23.4.", "error");
+    }
+    range.value = Math.min(duration, Math.max(0, parsed));
+    updateTrim(changed);
+  };
+
+  startRange.addEventListener("input", () => updateTrim("start"));
+  endRange.addEventListener("input", () => updateTrim("end"));
+  start.addEventListener("change", () => commitTimecode(start, startRange, "start"));
+  end.addEventListener("change", () => commitTimecode(end, endRange, "end"));
+  start.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") commitTimecode(start, startRange, "start");
+  });
+  end.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") commitTimecode(end, endRange, "end");
+  });
+  timeline.addEventListener("click", (event) => {
+    if (event.target.matches("input")) return;
+    const bounds = timeline.getBoundingClientRect();
+    updatePlayhead(((event.clientX - bounds.left) / bounds.width) * duration);
+    if (player) player.currentTime = playhead;
+  });
+
+  document.querySelector("#set-trim-start").addEventListener("click", () => {
+    startRange.value = Math.min(playhead, Number(endRange.value) - minimumClip);
+    updateTrim("start");
+  });
+  document.querySelector("#set-trim-end").addEventListener("click", () => {
+    endRange.value = Math.max(playhead, Number(startRange.value) + minimumClip);
+    updateTrim("end");
+  });
+
+  const iframe = document.querySelector("#stream-player");
+  if (iframe && typeof window.Stream === "function") {
+    player = window.Stream(iframe);
+    player.addEventListener("timeupdate", () => {
+      updatePlayhead(player.currentTime);
+      if (player.currentTime >= Number(endRange.value)) player.pause();
+    });
+  }
+  document.querySelector("#preview-trim").addEventListener("click", () => {
+    if (!player) return;
+    player.currentTime = Number(startRange.value);
+    player.play();
+  });
+  updatePlayhead(0);
+  updateTrim();
   const thumb = document.querySelector("#thumbnail-pct");
   thumb.addEventListener("input", () => { document.querySelector("#thumbnail-time").textContent = formatTime(duration * Number(thumb.value)); });
   document.querySelectorAll('input[name="editVisibility"]').forEach((radio) => radio.addEventListener("change", () => document.querySelector("#edit-retention").classList.toggle("hidden", radio.value !== "temporary" || !radio.checked)));
@@ -549,8 +663,8 @@ async function saveSettings() {
 async function createClip() {
   const sourceUid = state.selected.uid;
   const values = editorValues();
-  values.startTimeSeconds = Number(document.querySelector("#trim-start").value);
-  values.endTimeSeconds = Number(document.querySelector("#trim-end").value);
+  values.startTimeSeconds = parseTimecode(document.querySelector("#trim-start").value);
+  values.endTimeSeconds = parseTimecode(document.querySelector("#trim-end").value);
   values.name = values.name.endsWith("– edit") ? values.name : `${values.name} – edit`;
   if (values.endTimeSeconds <= values.startTimeSeconds) return toast("The end time must be after the start time.", "error");
   setBusy(true);
