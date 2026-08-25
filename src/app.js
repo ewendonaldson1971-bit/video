@@ -203,7 +203,9 @@ function shell() {
     </main>
     <div class="toast-region" id="toast-region" aria-live="polite"></div>`;
   document.querySelectorAll("[data-section]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.section)));
-  document.querySelector("#refresh-videos").addEventListener("click", async () => { await loadVideos(); toast("Video library refreshed."); });
+  document.querySelector("#refresh-videos").addEventListener("click", async () => {
+    if (await loadVideos()) toast("Video library refreshed.");
+  });
   document.querySelector("#logout-button")?.addEventListener("click", logout);
 }
 
@@ -395,10 +397,12 @@ async function waitUntilReady(uid) {
 async function loadVideos(render = true) {
   try {
     const result = await api("/videos");
-    state.videos = result.videos || [];
+    state.videos = Array.isArray(result.videos) ? result.videos : [];
     if (render && state.section === "library") renderLibrary();
+    return true;
   } catch (error) {
     toast(error.message, "error");
+    return false;
   }
 }
 

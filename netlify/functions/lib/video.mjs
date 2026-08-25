@@ -68,6 +68,12 @@ export function publicVideo(video) {
   };
 }
 
+export function normaliseVideoList(result) {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.videos)) return result.videos;
+  return [];
+}
+
 export function canAccessVideo(session, video) {
   return session.role === "admin" || video.creator === creatorFor(session);
 }

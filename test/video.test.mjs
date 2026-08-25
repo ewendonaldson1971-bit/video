@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normaliseVisibility, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
+import { normaliseVideoList, normaliseVisibility, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
 
 test("visibility defaults to private", () => {
   assert.equal(normaliseVisibility("unknown"), "private");
@@ -25,4 +25,11 @@ test("visibility can be inferred from Cloudflare video data", () => {
 test("tus metadata encodes values and flag keys", () => {
   const metadata = toTusMetadata({ name: "example.mov", requiresignedurls: true });
   assert.match(metadata, /^name [A-Za-z0-9+/=]+,requiresignedurls$/);
+});
+
+test("video lists accept both Cloudflare response shapes", () => {
+  const videos = [{ uid: "video-1" }];
+  assert.deepEqual(normaliseVideoList(videos), videos);
+  assert.deepEqual(normaliseVideoList({ videos }), videos);
+  assert.deepEqual(normaliseVideoList(null), []);
 });

@@ -5,6 +5,7 @@ import {
   clamp,
   creatorFor,
   escapeHtml,
+  normaliseVideoList,
   normaliseVisibility,
   privacyFields,
   publicVideo,
@@ -208,8 +209,8 @@ async function handler(request) {
     const query = new URLSearchParams({ limit: "100", include_counts: "true" });
     if (session.role !== "admin") query.set("creator", creatorFor(session));
     if (url.searchParams.get("search")) query.set("search", url.searchParams.get("search").slice(0, 100));
-    const videos = await cloudflare(`/stream?${query}`);
-    return json({ videos: (videos || []).map(publicVideo) });
+    const videos = normaliseVideoList(await cloudflare(`/stream?${query}`));
+    return json({ videos: videos.map(publicVideo) });
   }
 
   if (path === "/api/uploads/tus" && request.method === "POST") {
