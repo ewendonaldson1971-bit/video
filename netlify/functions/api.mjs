@@ -106,12 +106,14 @@ async function getAuthorisedVideo(session, uid) {
 
 async function createPlayback(video, hours = 1, tokenOptions = {}) {
   const host = streamHost();
+  const iframeVersion = video.modified || video.created;
+  const iframeQuery = iframeVersion ? `?v=${encodeURIComponent(iframeVersion)}` : "";
   if (!video.requireSignedURLs) {
     return {
       expiresAt: null,
       playbackId: video.uid,
       watchUrl: `https://${host}/${video.uid}/watch`,
-      iframeUrl: `https://${host}/${video.uid}/iframe`,
+      iframeUrl: `https://${host}/${video.uid}/iframe${iframeQuery}`,
       thumbnailUrl: `https://${host}/${video.uid}/thumbnails/thumbnail.jpg`,
     };
   }
@@ -127,7 +129,7 @@ async function createPlayback(video, hours = 1, tokenOptions = {}) {
     expiresAt: new Date(expiresAt * 1000).toISOString(),
     playbackId: token,
     watchUrl: `https://${host}/${token}/watch`,
-    iframeUrl: `https://${host}/${token}/iframe`,
+    iframeUrl: `https://${host}/${token}/iframe${iframeQuery}`,
     thumbnailUrl: `https://${host}/${token}/thumbnails/thumbnail.jpg`,
   };
 }

@@ -953,17 +953,23 @@ async function repairPlaybackOrigin() {
     state.selected = result.video;
     state.playback = null;
     state.playbackRequested = false;
-    toast("Playback is now allowed on Vivad Video.");
-    await refreshSelected(false);
+    toast("Playback is now allowed. Reloading the preview…");
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    await refreshSelected(false, true);
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
 }
 
-async function refreshSelected(notify = true) {
+async function refreshSelected(notify = true, bustPlaybackCache = false) {
   try {
     const result = await api(`/videos/${state.selected.uid}`);
     state.selected = result.video;
     state.playback = result.playback;
+    if (bustPlaybackCache && state.playback?.iframeUrl) {
+      const iframeUrl = new URL(state.playback.iframeUrl);
+      iframeUrl.searchParams.set("vivadRefresh", String(Date.now()));
+      state.playback.iframeUrl = iframeUrl.toString();
+    }
     state.playbackRequested = true;
     renderEditor();
     if (notify) toast(result.video.readyToStream ? "Video is ready." : "Processing status updated.");
