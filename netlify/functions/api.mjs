@@ -4,6 +4,7 @@ import { sendSmtpMessage } from "./lib/smtp.mjs";
 import {
   canAccessVideo,
   clamp,
+  configuredAllowedOrigins,
   creatorFor,
   escapeHtml,
   normaliseVideoList,
@@ -39,12 +40,7 @@ function streamHost() {
 }
 
 function allowedOrigins() {
-  const values = String(process.env.STREAM_ALLOWED_ORIGINS || "")
-    .split(",")
-    .map((value) => value.trim().replace(/^https?:\/\//, "").replace(/\/$/, ""))
-    .filter(Boolean);
-  if (!values.length) return undefined;
-  return [...new Set([...values, streamHost()])];
+  return configuredAllowedOrigins(process.env.STREAM_ALLOWED_ORIGINS, streamHost());
 }
 
 async function requestBody(request) {
@@ -230,7 +226,7 @@ async function handler(request) {
       scheduleddeletion: privacy.scheduledDeletion,
     };
     const origins = allowedOrigins();
-    if (origins) metadata.allowedorigins = JSON.stringify(origins);
+    metadata.allowedorigins = JSON.stringify(origins);
 
     const response = await fetch(`${API_ROOT}/accounts/${required("CLOUDFLARE_ACCOUNT_ID")}/stream?direct_user=true`, {
       method: "POST",
@@ -286,7 +282,7 @@ async function handler(request) {
     };
     if (privacy.scheduledDeletion) body.scheduledDeletion = privacy.scheduledDeletion;
     const origins = allowedOrigins();
-    if (origins) body.allowedOrigins = origins;
+    body.allowedOrigins = origins;
     const clip = await cloudflare("/stream/clip", { method: "POST", body: JSON.stringify(body) });
     return json({ video: publicVideo(clip) }, 201);
   }
@@ -303,7 +299,7 @@ async function handler(request) {
       meta: { ...(video.meta || {}), name: String(input.name || video?.meta?.name || "Video").slice(0, 180), vivadVisibility: privacy.visibility },
     };
     const origins = allowedOrigins();
-    if (origins) body.allowedOrigins = origins;
+    body.allowedOrigins = origins;
     const updated = await cloudflare(`/stream/${uid}`, { method: "POST", body: JSON.stringify(body) });
     return json({ video: publicVideo(updated) });
   }

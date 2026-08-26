@@ -20,6 +20,15 @@ export function normaliseVisibility(value) {
   return VALID_VISIBILITY.has(value) ? value : "private";
 }
 
+export function configuredAllowedOrigins(value, streamHostname) {
+  const origins = String(value || "")
+    .split(",")
+    .map((origin) => origin.trim().replace(/^https?:\/\//, "").replace(/\/$/, ""))
+    .filter(Boolean);
+  if (!origins.length) return [];
+  return [...new Set([...origins, streamHostname].filter(Boolean))];
+}
+
 export function privacyFields(visibility, temporaryDays = 30) {
   const mode = normaliseVisibility(visibility);
   const fields = {

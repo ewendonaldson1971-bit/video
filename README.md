@@ -75,7 +75,8 @@ explicitly configured to permit sender aliases.
 optional. Leaving it empty allows the player to appear in any host app; signed
 URLs still protect private and temporary videos. If origins are restricted,
 include every SPARK/Lotus host and the customer Stream hostname so emailed
-watch pages continue to work.
+watch pages continue to work. Saving a video's settings with the variable empty
+also clears any older per-video origin restriction.
 
 ## Host-app integration
 
