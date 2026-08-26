@@ -284,11 +284,13 @@ function purposeOptions(current = "general") {
 }
 
 function creationDetails(title = "Video details") {
+  const initialPurpose = state.session?.purpose || "general";
+  const initialAccess = { website: "public", training: "organisation", sop: "organisation", internal: "organisation", client: "client", general: "link" }[initialPurpose] || "link";
   return `<div class="creation-details"><h3>${title}</h3>
     <label class="field"><span>Video name</span><input name="name" value="${escapeHtml(state.file?.name || "")}" placeholder="Customer video" required></label>
-    ${purposeOptions("general")}
+    ${purposeOptions(initialPurpose)}
     <label class="field"><span>Description</span><textarea name="description" placeholder="What this video covers"></textarea></label>
-    <span class="field-label">Access</span>${visibilityOptions("expiring", "uploadVisibility")}
+    <span class="field-label">Access</span>${visibilityOptions(initialAccess, "uploadVisibility")}
     <label class="field hidden" id="upload-retention" style="margin-top:14px"><span>Delete automatically after</span><select name="temporaryDays"><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
   </div>`;
 }
@@ -357,7 +359,7 @@ function bindUpload() {
   document.querySelector("#pause-recording")?.addEventListener("click", toggleRecordingPause);
   document.querySelector("#stop-recording")?.addEventListener("click", stopRecording);
   document.querySelector("#import-direct")?.addEventListener("click", importDirectUrl);
-  document.querySelector("#add-external")?.addEventListener("click", () => toast("External references need VIDEO_DATABASE_URL before they can be stored safely.", "error"));
+  document.querySelector("#add-external")?.addEventListener("click", addExternalVideo);
 }
 
 function selectFile(file) {
@@ -502,6 +504,22 @@ async function importDirectUrl() {
     await loadVideos(false);
     navigate("library");
     toast("Import started. Cloudflare is processing the video.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function addExternalVideo() {
+  const form = new FormData(document.querySelector("#upload-form"));
+  setBusy(true);
+  try {
+    const result = await api("/videos/external", { method: "POST", body: JSON.stringify({
+      url: document.querySelector("#external-video-url").value, name: form.get("name"), purpose: form.get("purpose"),
+      description: form.get("description"), access: form.get("uploadVisibility"),
+    }) });
+    state.selected = result.video;
+    emitHostEvent("video.created", { id: result.video.id, provider: result.video.provider });
+    toast("External video reference added.");
+    navigate("library");
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
 }
@@ -684,6 +702,11 @@ function renderEditor() {
                 <button class="button button-secondary button-small" id="set-trim-start" type="button">Set start at playhead</button>
                 <button class="button button-secondary button-small" id="set-trim-end" type="button">Set end at playhead</button>
                 <button class="button button-quiet button-small" id="preview-trim" type="button" ${state.playback?.iframeUrl ? "" : "disabled"}>Preview selection</button>
+                <button class="button button-quiet button-small" id="nudge-start-back" type="button" aria-label="Move start back one tenth of a second">Start −0.1s</button>
+                <button class="button button-quiet button-small" id="nudge-start-forward" type="button" aria-label="Move start forward one tenth of a second">Start +0.1s</button>
+                <button class="button button-quiet button-small" id="nudge-end-back" type="button" aria-label="Move end back one tenth of a second">End −0.1s</button>
+                <button class="button button-quiet button-small" id="nudge-end-forward" type="button" aria-label="Move end forward one tenth of a second">End +0.1s</button>
+                <button class="button button-quiet button-small" id="reset-trim" type="button">Reset trim</button>
               </div>
               <div class="time-grid trim-timecodes">
                 <label class="field"><span>Start time</span><input id="trim-start" inputmode="decimal" value="${formatTimecode(0)}" aria-describedby="timecode-help"></label>
@@ -709,8 +732,27 @@ function renderEditor() {
               <p class="muted">Choose the frame used in the library and customer email.</p>
               <div class="range-row"><span>Start</span><input id="thumbnail-pct" type="range" min="0" max="1" step="0.01" value="${video.thumbnailTimestampPct || 0}"><span id="thumbnail-time">${formatTime(duration * (video.thumbnailTimestampPct || 0))}</span></div>
             </div>
+            <div class="tool-card">
+              <h3>Workflow metadata</h3>
+              <p class="muted">Used for training, SOP and internal organisation. A database is required for reliable per-user acknowledgement tracking.</p>
+              <label class="field"><span>Department or team</span><input id="edit-department" value="${escapeHtml(video.core?.department || "")}"></label>
+              <label class="field"><span>Training topic</span><input id="edit-topic" value="${escapeHtml(video.core?.topic || "")}"></label>
+              <label class="field"><span>SOP category</span><input id="edit-category" value="${escapeHtml(video.core?.category || "")}"></label>
+              <div class="grid-equal"><label class="field"><span>Content owner</span><input id="edit-owner" value="${escapeHtml(video.core?.contentOwner || "")}"></label><label class="field"><span>Version</span><input id="edit-version" value="${escapeHtml(video.core?.version || "1")}"></label></div>
+              <div class="grid-equal"><label class="field"><span>Review date</span><input id="edit-review-date" type="date" value="${escapeHtml(video.core?.reviewDate || "")}"></label><label class="field"><span>Content expiry</span><input id="edit-expiry-date" type="date" value="${escapeHtml(video.core?.expiryDate?.slice?.(0, 10) || "")}"></label></div>
+              <label class="field"><span>Related document links (one per line)</span><textarea id="edit-related-links">${escapeHtml((video.core?.relatedLinks || []).join("\n"))}</textarea></label>
+              <label class="check-field"><input id="edit-acknowledgement" type="checkbox" ${video.core?.requiredAcknowledgement ? "checked" : ""}><span>Require acknowledgement when server-side tracking is configured</span></label>
+            </div>
+            <div class="tool-card">
+              <h3>Captions and downloads</h3>
+              <p class="muted">Generate English captions, manage WebVTT files, or request MP4/M4A derivatives from Cloudflare.</p>
+              <div class="grid-equal"><label class="field"><span>Caption language</span><input id="caption-language" value="en" maxlength="20"></label><label class="field"><span>Upload WebVTT</span><input id="caption-file" type="file" accept=".vtt,text/vtt"></label></div>
+              <div class="button-row"><button class="button button-secondary button-small" id="refresh-media" type="button">Refresh status</button><button class="button button-secondary button-small" id="generate-mp4" type="button">Generate MP4</button><button class="button button-secondary button-small" id="generate-audio" type="button">Generate audio</button></div>
+              <div id="media-assets" class="media-assets"><p class="muted">Select Refresh status to list captions and downloads.</p></div>
+            </div>
             <div class="button-row">
               <button class="button button-primary" id="save-settings" data-busy ${video.readyToStream ? "" : "disabled"}>Save settings</button>
+              <button class="button button-quiet" id="undo-settings" type="button">Undo unsaved changes</button>
               <button class="button button-secondary" id="generate-captions" data-busy ${video.readyToStream ? "" : "disabled"}>Generate captions</button>
             </div>
           </div>
@@ -725,7 +767,7 @@ function renderEditor() {
 }
 
 function editorValues() {
-  const visibility = document.querySelector('input[name="editVisibility"]:checked')?.value || "private";
+  const visibility = document.querySelector('input[name="editVisibility"]:checked')?.value || "expiring";
   return {
     name: document.querySelector("#edit-name").value.trim(),
     purpose: document.querySelector("#edit-purpose").value,
@@ -733,6 +775,15 @@ function editorValues() {
     visibility,
     temporaryDays: Number(document.querySelector("#edit-temporary-days")?.value || 30),
     thumbnailTimestampPct: Number(document.querySelector("#thumbnail-pct").value),
+    department: document.querySelector("#edit-department").value.trim(),
+    topic: document.querySelector("#edit-topic").value.trim(),
+    category: document.querySelector("#edit-category").value.trim(),
+    owner: document.querySelector("#edit-owner").value.trim(),
+    version: document.querySelector("#edit-version").value.trim(),
+    reviewDate: document.querySelector("#edit-review-date").value,
+    expiryDate: document.querySelector("#edit-expiry-date").value,
+    relatedLinks: document.querySelector("#edit-related-links").value.trim(),
+    requiredAcknowledgement: document.querySelector("#edit-acknowledgement").checked,
   };
 }
 
@@ -807,6 +858,20 @@ function bindEditor(duration) {
     endRange.value = Math.max(playhead, Number(startRange.value) + minimumClip);
     updateTrim("end");
   });
+  const nudge = (range, delta, changed) => {
+    range.value = Math.min(duration, Math.max(0, Number(range.value) + delta));
+    updateTrim(changed);
+  };
+  document.querySelector("#nudge-start-back").addEventListener("click", () => nudge(startRange, -0.1, "start"));
+  document.querySelector("#nudge-start-forward").addEventListener("click", () => nudge(startRange, 0.1, "start"));
+  document.querySelector("#nudge-end-back").addEventListener("click", () => nudge(endRange, -0.1, "end"));
+  document.querySelector("#nudge-end-forward").addEventListener("click", () => nudge(endRange, 0.1, "end"));
+  document.querySelector("#reset-trim").addEventListener("click", () => {
+    startRange.value = 0;
+    endRange.value = duration;
+    updatePlayhead(0);
+    updateTrim();
+  });
 
   const iframe = document.querySelector("#stream-player");
   if (iframe && typeof window.Stream === "function") {
@@ -837,6 +902,11 @@ function bindEditor(duration) {
     markSettingsDirty("Thumbnail changed. Save changes to apply it.");
   });
   document.querySelector("#edit-name").addEventListener("input", () => markSettingsDirty("Name changed. Save changes to apply it."));
+  document.querySelector("#edit-purpose").addEventListener("change", () => markSettingsDirty("Purpose changed. Save changes to apply it."));
+  document.querySelector("#edit-description").addEventListener("input", () => markSettingsDirty("Description changed. Save changes to apply it."));
+  ["edit-department", "edit-topic", "edit-category", "edit-owner", "edit-version", "edit-review-date", "edit-expiry-date", "edit-related-links", "edit-acknowledgement"].forEach((id) => {
+    document.querySelector(`#${id}`).addEventListener(id === "edit-acknowledgement" || id.includes("date") ? "change" : "input", () => markSettingsDirty("Workflow metadata changed. Save changes to apply it."));
+  });
   document.querySelector("#edit-temporary-days").addEventListener("change", () => markSettingsDirty("Retention changed. Save changes to apply it."));
   document.querySelectorAll('input[name="editVisibility"]').forEach((radio) => radio.addEventListener("change", () => {
     document.querySelector("#edit-retention").classList.toggle("hidden", radio.value !== "temporary" || !radio.checked);
@@ -844,8 +914,13 @@ function bindEditor(duration) {
   }));
   document.querySelector("#check-status")?.addEventListener("click", () => refreshSelected());
   document.querySelector("#save-settings").addEventListener("click", saveSettings);
+  document.querySelector("#undo-settings").addEventListener("click", renderEditor);
   document.querySelector("#create-clip").addEventListener("click", createClip);
   document.querySelector("#generate-captions").addEventListener("click", generateCaptions);
+  document.querySelector("#refresh-media").addEventListener("click", loadMediaAssets);
+  document.querySelector("#caption-file").addEventListener("change", uploadCaptionFile);
+  document.querySelector("#generate-mp4").addEventListener("click", () => generateDownload("default"));
+  document.querySelector("#generate-audio").addEventListener("click", () => generateDownload("audio"));
 }
 
 async function refreshSelected(notify = true) {
@@ -898,9 +973,64 @@ async function createClip() {
 async function generateCaptions() {
   setBusy(true);
   try {
-    await api(`/videos/${state.selected.uid}/captions`, { method: "POST", body: JSON.stringify({ language: "en" }) });
-    toast("English captions are being generated.");
+    const language = captionLanguage();
+    await api(`/videos/${state.selected.uid}/captions`, { method: "POST", body: JSON.stringify({ language }) });
+    toast(`${language} captions are being generated.`);
   } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+function captionLanguage() {
+  const language = String(document.querySelector("#caption-language")?.value || "en").trim().toLowerCase();
+  if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(language)) throw new Error("Enter a valid caption language such as en or en-AU.");
+  return language;
+}
+
+async function loadMediaAssets() {
+  setBusy(true);
+  try {
+    const [captionResult, downloadResult] = await Promise.all([api(`/videos/${state.selected.uid}/captions`), api(`/videos/${state.selected.uid}/downloads`)]);
+    const captions = Array.isArray(captionResult.captions) ? captionResult.captions : [];
+    const captionRows = captions.map((caption) => `<li><span><strong>${escapeHtml(caption.label || caption.language)}</strong> · ${escapeHtml(caption.status || "unknown")}${caption.generated ? " · AI generated" : ""}</span><span class="button-row">${caption.status === "ready" ? `<a class="button button-quiet button-small" href="/api/videos/${state.selected.uid}/captions/${encodeURIComponent(caption.language)}/vtt" target="_blank">Download</a>` : ""}<button class="button button-quiet button-small" type="button" data-delete-caption="${escapeHtml(caption.language)}">Delete</button></span></li>`).join("");
+    const downloads = downloadResult.downloads || {};
+    const downloadRows = [["default", "MP4 video"], ["audio", "M4A audio"]].map(([type, label]) => {
+      const item = downloads[type];
+      return `<li><span><strong>${label}</strong> · ${escapeHtml(item?.status || "not generated")}${item?.percentComplete != null ? ` · ${Math.round(item.percentComplete)}%` : ""}</span>${item?.status === "ready" && item.url ? `<a class="button button-quiet button-small" href="${escapeHtml(item.url)}" target="_blank" rel="noopener">Download</a>` : ""}</li>`;
+    }).join("");
+    document.querySelector("#media-assets").innerHTML = `<h4>Captions</h4><ul class="asset-list">${captionRows || "<li>No captions yet.</li>"}</ul><h4>Downloads</h4><ul class="asset-list">${downloadRows}</ul>`;
+    document.querySelectorAll("[data-delete-caption]").forEach((button) => button.addEventListener("click", () => deleteCaption(button.dataset.deleteCaption)));
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function uploadCaptionFile(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  setBusy(true);
+  try {
+    const language = captionLanguage();
+    const vtt = await file.text();
+    await api(`/videos/${state.selected.uid}/captions/${language}`, { method: "PUT", body: JSON.stringify({ vtt }) });
+    toast(`${language} captions uploaded.`);
+    await loadMediaAssets();
+  } catch (error) { toast(error.message, "error"); }
+  finally { event.target.value = ""; setBusy(false); }
+}
+
+async function deleteCaption(language) {
+  if (!window.confirm(`Delete the ${language} caption file?`)) return;
+  setBusy(true);
+  try { await api(`/videos/${state.selected.uid}/captions/${language}`, { method: "DELETE" }); toast("Caption deleted."); await loadMediaAssets(); }
+  catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function generateDownload(type) {
+  const label = type === "audio" ? "audio-only M4A" : "MP4";
+  if (!window.confirm(`Ask Cloudflare to generate an ${label} download? This creates a stored derivative.`)) return;
+  setBusy(true);
+  try { await api(`/videos/${state.selected.uid}/downloads/${type}`, { method: "POST", body: JSON.stringify({}) }); toast(`${label} generation started.`); await loadMediaAssets(); }
+  catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
 }
 
@@ -922,6 +1052,16 @@ function renderShare() {
         </div>
         <div id="share-link-result"></div>
         <div class="form-divider"></div>
+        <p class="eyebrow">Publishing destinations</p>
+        <h3>Website and Discourse</h3>
+        <p class="muted">Public videos can produce indexable website metadata and responsive embeds. Protected videos use a stable Vivad share link.</p>
+        <div class="button-row">
+          <button class="button button-secondary" id="copy-discourse-link" type="button">Copy Discourse link</button>
+          <button class="button button-secondary" id="copy-discourse-markdown" type="button">Copy Markdown</button>
+          <button class="button button-secondary" id="copy-discourse-iframe" type="button" ${video.visibility === "public" ? "" : "disabled"}>Copy public iframe</button>
+          <button class="button button-secondary" id="save-strapi-draft" type="button" ${video.visibility === "public" ? "" : "disabled"}>Save draft to Strapi</button>
+        </div>
+        <div class="form-divider"></div>
         <p class="eyebrow">Email with iRedMail</p>
         <h3>Send to a customer</h3>
         <form id="email-form" style="margin-top:18px">
@@ -936,7 +1076,40 @@ function renderShare() {
       </div>
     </section>`;
   document.querySelector("#copy-link").addEventListener("click", copyShareLink);
+  document.querySelector("#copy-discourse-link").addEventListener("click", () => copyPublishingValue("link"));
+  document.querySelector("#copy-discourse-markdown").addEventListener("click", () => copyPublishingValue("markdown"));
+  document.querySelector("#copy-discourse-iframe").addEventListener("click", () => copyPublishingValue("iframe"));
+  document.querySelector("#save-strapi-draft").addEventListener("click", saveStrapiDraft);
   document.querySelector("#email-form").addEventListener("submit", sendEmail);
+}
+
+async function publishingPackage() {
+  if (state.selected.visibility === "public") return api(`/videos/${state.selected.uid}/publishing`);
+  const share = await createShareLink();
+  return { discourse: { link: share.watchUrl, markdown: `[${state.selected.name.replace(/[\[\]]/g, "")}](${share.watchUrl})`, iframe: null } };
+}
+
+async function copyPublishingValue(kind) {
+  setBusy(true);
+  try {
+    const result = await publishingPackage();
+    const value = result.discourse?.[kind];
+    if (!value) throw new Error("That embed format is available only for public videos.");
+    await navigator.clipboard.writeText(value);
+    toast(`${kind === "iframe" ? "Iframe" : kind === "markdown" ? "Markdown" : "Link"} copied for Discourse.`);
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function saveStrapiDraft() {
+  if (!window.confirm("Save this public video as a draft in the configured Strapi website?")) return;
+  setBusy(true);
+  try {
+    const result = await api(`/videos/${state.selected.uid}/strapi`, { method: "POST", body: JSON.stringify({}) });
+    toast(`Strapi draft saved${result.draft?.documentId ? ` (${result.draft.documentId})` : ""}.`);
+    emitHostEvent("video.published", { uid: state.selected.uid, destination: "strapi", status: "draft" });
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
 }
 
 async function createShareLink() {
@@ -1010,6 +1183,33 @@ async function renderPublicShare(shareId) {
   }
 }
 
+function applyPublishingMetadata(publishing) {
+  if (!publishing) return;
+  document.querySelector('meta[name="robots"]')?.remove();
+  const robots = document.createElement("meta");
+  robots.name = "robots";
+  robots.content = publishing.robots;
+  document.head.append(robots);
+  if (publishing.jsonLd) {
+    const script = document.createElement("script");
+    script.type = "application/ld+json";
+    script.textContent = JSON.stringify(publishing.jsonLd).replace(/</g, "\\u003c");
+    document.head.append(script);
+  }
+}
+
+async function renderPublicVideo(uid) {
+  app.innerHTML = `<main class="public-watch"><section class="watch-card"><img class="brand-logo" src="/assets/vivad-logo.png" alt="Vivad"><div class="player-placeholder"><div><span class="loading"></span><p>Loading public video…</p></div></div></section></main>`;
+  try {
+    const response = await fetch(`/api/public/videos/${encodeURIComponent(uid)}`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "This public video is unavailable.");
+    document.title = `${result.video.name} · Vivad Video`;
+    applyPublishingMetadata(result.publishing);
+    app.innerHTML = `<main class="public-watch"><section class="watch-card"><div class="watch-header"><img class="brand-logo" src="/assets/vivad-logo.png" alt="Vivad"><span class="badge badge-public">Public</span></div><iframe class="player-frame" src="${escapeHtml(result.playback.iframeUrl)}" title="${escapeHtml(result.video.name)}" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe><div class="watch-copy"><h1>${escapeHtml(result.video.name)}</h1><p>${escapeHtml(result.video.description || "")}</p></div></section></main>`;
+  } catch (error) { app.innerHTML = `<main class="public-watch"><section class="watch-card"><img class="brand-logo" src="/assets/vivad-logo.png" alt="Vivad"><div class="status-banner error" role="alert"><span>${escapeHtml(error.message)}</span></div></section></main>`; }
+}
+
 async function initialise() {
   if (demoMode) {
     state.session = { sub: "demo", name: "Vivad user", app: "standalone", role: "admin", mode: "standalone" };
@@ -1017,6 +1217,8 @@ async function initialise() {
     return startApp();
   }
   const params = new URLSearchParams(location.search);
+  const publicVideoId = params.get("watch");
+  if (publicVideoId) return renderPublicVideo(publicVideoId);
   const shareId = params.get("share");
   if (shareId) return renderPublicShare(shareId);
   const embedToken = params.get("embedToken");

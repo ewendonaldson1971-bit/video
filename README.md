@@ -19,17 +19,28 @@ iRedMail SMTP credentials stored in Netlify environment variables for delivery.
 - Standalone email/password authentication through the same service used by SAV Builder
 - Short-lived signed sessions for SPARK, Lotus and other host apps
 - `postMessage` lifecycle events for embedded integrations
+- Purpose templates for website, training, SOP, internal, client and general video
+- Seven audience policies, including unlisted, organisation, team and client sharing
+- Browser camera, screen, screen-plus-camera and audio recording
+- Protected direct video-file URL imports through Cloudflare Stream
+- Stable customer share pages that generate fresh short-lived playback tokens
+- Public SEO watch pages and reusable Strapi/Discourse publishing output
 
 ## Access modes
 
 | Mode | Playback | Storage lifetime |
 | --- | --- | --- |
 | Public | Anyone with the normal Stream link | Until manually deleted |
-| Private | Signed link required; links expire within 24 hours | Until manually deleted |
+| Anyone with link | Unlisted public playback; excluded from SEO | Until manually deleted |
+| Organisation, team, client or expiring | Signed playback through a Vivad share/watch workflow | Until manually deleted |
 | Temporary | Signed link required | Automatically deleted after the selected retention period |
 
 Cloudflare requires scheduled deletion to be at least 30 days after creation.
 The signed-token API limits individual playback tokens to 24 hours.
+Customer emails no longer contain those playback tokens. They contain a signed
+Vivad share ID; the watch page requests a fresh one-hour playback token when it
+loads. Set a separate `SHARE_SIGNING_SECRET` before production use. Existing
+deployments temporarily fall back to `SESSION_SIGNING_SECRET` for compatibility.
 
 ## Local setup
 
@@ -82,6 +93,18 @@ also clears any older per-video origin restriction.
 
 See [docs/embedding.md](docs/embedding.md) for token generation, iframe setup,
 event handling and framing restrictions.
+
+## Architecture and publishing
+
+- [Architecture and persistence](docs/architecture.md)
+- [Strapi and video SEO](docs/strapi-seo.md)
+- [Discourse sharing](docs/discourse.md)
+
+Cloudflare Stream metadata remains the migration store for Vivad-hosted media.
+A production database is still required before enabling durable external video
+references, collections, transcripts, chapters, acknowledgements, comments,
+client activity or review history. The app does not use `localStorage` as a
+multi-user database.
 
 ## Verification
 

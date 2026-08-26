@@ -19,7 +19,9 @@ The helper in `integration/create-embed-token.mjs` produces an HS256 JWT with:
 - `name`: display name
 - `app`: stable application ID such as `spark` or `lotus`
 - `origin`: exact parent origin that may receive editor events
-- `context`: optional job, customer or order identifiers
+- `role`: viewer, editor or admin
+- `purpose`: initial workflow purpose
+- `context`: optional customer/project identifiers and return destination
 - `iss`: `vivad-host`
 - `aud`: `vivad-video`
 - `exp`: no more than ten minutes after issue
@@ -34,6 +36,11 @@ const token = createVivadVideoEmbedToken({
   app: "spark",
   origin: "https://spark.vivad.com.au",
   context: { jobId: job.id, customerId: job.customerId },
+  role: "editor",
+  purpose: "client",
+  customerId: job.customerId,
+  projectId: job.id,
+  returnTo: `/jobs/${job.id}`,
 });
 ```
 
@@ -68,6 +75,9 @@ window.addEventListener("message", (event) => {
     case "video.selected":
     case "video.shared":
     case "video.emailed":
+    case "video.published":
+    case "video.deleted":
+    case "video.expired":
       saveVideoEventToHostApp(event.data);
       break;
   }

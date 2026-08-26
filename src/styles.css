@@ -82,6 +82,8 @@ input, select, textarea {
 }
 input:focus, select:focus, textarea:focus { border-color: var(--vivad-blue); box-shadow: 0 0 0 3px rgba(71, 143, 225, 0.18); }
 textarea { min-height: 110px; resize: vertical; }
+.check-field { display: flex; align-items: flex-start; gap: 10px; color: var(--vivad-charcoal); font-size: 0.86rem; line-height: 1.4; }
+.check-field input { width: 20px; height: 20px; flex: 0 0 auto; margin: 0; accent-color: var(--vivad-blue); }
 
 .button {
   min-height: 44px;
@@ -242,6 +244,10 @@ input[type="range"] { padding: 0; border: 0; box-shadow: none; accent-color: var
 .trim-timecodes .field { margin-bottom: 8px; }
 .trim-timecodes input { font-variant-numeric: tabular-nums; }
 .timecode-help { margin: 0 0 18px; color: var(--vivad-muted); font-size: 0.75rem; }
+.media-assets { margin-top: 18px; }
+.media-assets h4 { margin: 16px 0 8px; color: var(--vivad-charcoal); }
+.asset-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.asset-list li { min-height: 44px; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--vivad-border); font-size: 0.82rem; }
 
 .status-banner { border-left: 5px solid var(--vivad-green); border-radius: 6px; background: rgba(124, 191, 29, 0.1); padding: 15px 17px; display: flex; justify-content: space-between; align-items: center; gap: 18px; }
 .status-banner.error { border-color: var(--vivad-red); background: rgba(228, 0, 43, 0.08); }

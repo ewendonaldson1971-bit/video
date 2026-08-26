@@ -12,8 +12,17 @@ export class VideoRepository {
 }
 
 export class StrapiPublisher {
-  constructor(env = process.env) { this.configured = Boolean(env.STRAPI_URL && env.STRAPI_API_TOKEN); }
-  async saveDraft() { if (!this.configured) throw Object.assign(new Error("Strapi publishing is not configured."), { status: 503 }); }
+  constructor(env = process.env, fetchImpl = fetch) { this.env = env; this.fetch = fetchImpl; this.configured = Boolean(env.STRAPI_URL && env.STRAPI_API_TOKEN); }
+  async saveDraft(data) {
+    if (!this.configured) throw Object.assign(new Error("Strapi publishing is not configured."), { status: 503 });
+    const contentType = String(this.env.STRAPI_VIDEO_CONTENT_TYPE || "videos").replace(/[^a-zA-Z0-9_-]/g, "");
+    const response = await this.fetch(`${String(this.env.STRAPI_URL).replace(/\/$/, "")}/api/${contentType}?status=draft`, {
+      method: "POST", headers: { authorization: `Bearer ${this.env.STRAPI_API_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ data }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(payload?.error?.message || `Strapi request failed (${response.status}).`), { status: 502 });
+    return payload.data;
+  }
 }
 
 export class DiscoursePublisher {

@@ -1,8 +1,10 @@
 import { authenticateStandalone, authenticationProvider } from "./lib/auth.mjs";
 import { createSession, requireSession, signToken, verifyToken } from "./lib/security.mjs";
 import { sendSmtpMessage } from "./lib/smtp.mjs";
-import { integrationCapabilities } from "./lib/adapters.mjs";
-import { modelMetadata, validateDirectMediaUrl } from "./lib/model.mjs";
+import { integrationCapabilities, StrapiPublisher, VideoRepository } from "./lib/adapters.mjs";
+import { modelMetadata, parseExternalVideoUrl, validateDirectMediaUrl } from "./lib/model.mjs";
+import { createPublishingBundle, discourseSharePackage } from "./lib/publishing.mjs";
+import { enforceRateLimit } from "./lib/rate-limit.mjs";
 import {
   canAccessVideo,
   clamp,
@@ -76,7 +78,7 @@ async function cloudflare(path, options = {}) {
     ...options,
     headers: {
       authorization: `Bearer ${required("CLOUDFLARE_API_TOKEN")}`,
-      ...(options.body ? { "content-type": "application/json" } : {}),
+      ...(typeof options.body === "string" ? { "content-type": "application/json" } : {}),
       ...options.headers,
     },
   });
@@ -99,7 +101,7 @@ async function getAuthorisedVideo(session, uid) {
   return video;
 }
 
-async function createPlayback(video, hours = 1) {
+async function createPlayback(video, hours = 1, tokenOptions = {}) {
   const host = streamHost();
   if (!video.requireSignedURLs) {
     return {
@@ -114,7 +116,7 @@ async function createPlayback(video, hours = 1) {
   const expiresAt = Math.floor(Date.now() / 1000 + expiresHours * 3600);
   const result = await cloudflare(`/stream/${video.uid}/token`, {
     method: "POST",
-    body: JSON.stringify({ exp: expiresAt, nbf: Math.floor(Date.now() / 1000) - 30 }),
+    body: JSON.stringify({ exp: expiresAt, nbf: Math.floor(Date.now() / 1000) - 30, ...tokenOptions }),
   });
   const token = result?.token;
   if (!token) throw Object.assign(new Error("Cloudflare did not return a playback token."), { status: 502 });
@@ -140,6 +142,10 @@ function emailAddress(value) {
     throw Object.assign(new Error("Enter a valid recipient email address."), { status: 400 });
   }
   return email;
+}
+
+function requireEditorRole(session) {
+  if (!['editor', 'admin'].includes(session.role)) throw Object.assign(new Error("Your role does not permit changes."), { status: 403 });
 }
 
 async function sendVideoEmail(request, session, video, input) {
@@ -201,6 +207,7 @@ async function handler(request) {
 
   const publicShareMatch = path.match(/^\/api\/public\/shares\/(.+)$/);
   if (publicShareMatch && request.method === "GET") {
+    enforceRateLimit(request, "public-share", { limit: 120, windowMs: 60 * 60 * 1000 });
     let claim;
     try { claim = verifyToken(decodeURIComponent(publicShareMatch[1]), shareSecret(), { issuer: "vivad-video", audience: "vivad-video-share" }); }
     catch (error) { throw Object.assign(new Error(error.message), { status: 401 }); }
@@ -210,7 +217,19 @@ async function handler(request) {
     return json({ video: publicVideo(video), playback: await createPlayback(video, 1), share: { expiresAt: new Date(claim.exp * 1000).toISOString(), allowDownload: Boolean(claim.download) } });
   }
 
+  const publicVideoMatch = path.match(/^\/api\/public\/videos\/([a-zA-Z0-9]{20,64})$/);
+  if (publicVideoMatch && request.method === "GET") {
+    const video = await getVideo(publicVideoMatch[1]);
+    const safe = publicVideo(video);
+    if (video.requireSignedURLs || safe.visibility !== "public") throw Object.assign(new Error("This video is not public."), { status: 404 });
+    if (!video.readyToStream) throw Object.assign(new Error("This video is not ready yet."), { status: 409 });
+    const playback = await createPlayback(video, 1);
+    const watchUrl = `${applicationOrigin(request)}/?watch=${encodeURIComponent(video.uid)}`;
+    return json({ video: safe, playback, publishing: createPublishingBundle({ video: safe.core, watchUrl, iframeUrl: playback.iframeUrl, thumbnailUrl: playback.thumbnailUrl, canonicalUrl: watchUrl }) });
+  }
+
   if (path === "/api/session/login" && request.method === "POST") {
+    enforceRateLimit(request, "login", { limit: 10, windowMs: 15 * 60 * 1000 });
     const input = await requestBody(request);
     const identity = await authenticateStandalone(input);
     const session = { sub: identity.sub, name: identity.name, email: identity.email || null, app: "standalone", role: "admin", mode: "standalone", authProvider: identity.provider };
@@ -226,7 +245,14 @@ async function handler(request) {
       throw Object.assign(new Error(error.message), { status: 401 });
     }
     if (!claim.sub || !claim.app) throw Object.assign(new Error("Embed token requires sub and app claims."), { status: 401 });
-    const session = { sub: String(claim.sub), name: String(claim.name || "User"), app: String(claim.app), role: "editor", mode: "embedded", parentOrigin: claim.origin || null, context: claim.context || null };
+    let parentOrigin = null;
+    try {
+      const parsed = new URL(String(claim.origin || ""));
+      if (parsed.origin !== claim.origin || parsed.hostname.includes("*") || (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname)))) throw new Error();
+      parentOrigin = parsed.origin;
+    } catch { throw Object.assign(new Error("Embed token requires an exact HTTPS parent origin."), { status: 401 }); }
+    const role = ["viewer", "editor", "admin"].includes(claim.role) ? claim.role : "editor";
+    const session = { sub: String(claim.sub), name: String(claim.name || "User"), app: String(claim.app), role, purpose: String(claim.purpose || "general"), mode: "embedded", parentOrigin, context: claim.context || null };
     return json({ token: createSession(session), session });
   }
 
@@ -243,7 +269,25 @@ async function handler(request) {
     return json({ videos: videos.map(publicVideo) });
   }
 
+  if (path === "/api/videos/external" && request.method === "POST") {
+    requireEditorRole(session);
+    const input = await requestBody(request);
+    const external = parseExternalVideoUrl(input.url);
+    const record = {
+      provider: external.provider,
+      providerId: external.providerId,
+      sourceUrl: external.url,
+      owner: session.sub,
+      creator: creatorFor(session),
+      meta: modelMetadata({ ...input, access: input.access || "link" }),
+      createdAt: new Date().toISOString(),
+    };
+    return json({ video: await new VideoRepository().saveExternal(record) }, 201);
+  }
+
   if (path === "/api/imports/direct" && request.method === "POST") {
+    requireEditorRole(session);
+    enforceRateLimit(request, "direct-import", { limit: 20, windowMs: 60 * 60 * 1000 });
     const input = await requestBody(request);
     const mediaUrl = validateDirectMediaUrl(input.url);
     const privacy = privacyFields(input.access || input.visibility, input.temporaryDays);
@@ -261,7 +305,51 @@ async function handler(request) {
     return json({ video: publicVideo(imported) }, 202);
   }
 
+  const captionLanguageMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]{20,64})\/captions\/([a-zA-Z0-9-]{2,20})(?:\/(vtt))?$/);
+  if (captionLanguageMatch) {
+    const [, captionUid, languageRaw, captionFormat] = captionLanguageMatch;
+    await getAuthorisedVideo(session, captionUid);
+    const language = languageRaw.toLowerCase();
+    if (captionFormat === "vtt" && request.method === "GET") {
+      const response = await fetch(`${API_ROOT}/accounts/${required("CLOUDFLARE_ACCOUNT_ID")}/stream/${captionUid}/captions/${language}/vtt`, { headers: { authorization: `Bearer ${required("CLOUDFLARE_API_TOKEN")}` } });
+      if (!response.ok) throw Object.assign(new Error(`Unable to download captions (${response.status}).`), { status: 502 });
+      return new Response(await response.text(), { headers: { "content-type": "text/vtt; charset=utf-8", "content-disposition": `attachment; filename="captions-${language}.vtt"`, "cache-control": "no-store" } });
+    }
+    if (request.method === "PUT") {
+      requireEditorRole(session);
+      const input = await requestBody(request);
+      const vtt = String(input.vtt || "");
+      if (!vtt.startsWith("WEBVTT") || vtt.length > 2_000_000) throw Object.assign(new Error("Upload a valid WebVTT file smaller than 2 MB."), { status: 400 });
+      const form = new FormData();
+      form.append("file", new Blob([vtt], { type: "text/vtt" }), `captions-${language}.vtt`);
+      return json({ caption: await cloudflare(`/stream/${captionUid}/captions/${language}`, { method: "PUT", body: form }) });
+    }
+    if (request.method === "DELETE") { requireEditorRole(session); return json({ deleted: await cloudflare(`/stream/${captionUid}/captions/${language}`, { method: "DELETE" }) }); }
+  }
+
+  const downloadsMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]{20,64})\/downloads(?:\/(default|audio))?$/);
+  if (downloadsMatch) {
+    const [, downloadUid, downloadType] = downloadsMatch;
+    const video = await getAuthorisedVideo(session, downloadUid);
+    if (request.method === "POST") {
+      requireEditorRole(session);
+      const type = downloadType || "default";
+      return json({ downloads: await cloudflare(`/stream/${downloadUid}/downloads/${type}`, { method: "POST", body: JSON.stringify({}) }) }, 202);
+    }
+    if (request.method === "GET") {
+      const downloads = await cloudflare(`/stream/${downloadUid}/downloads`);
+      if (video.requireSignedURLs) {
+        const token = await createPlayback(video, 1, { downloadable: true });
+        for (const value of Object.values(downloads || {})) {
+          if (value?.url) value.url = value.url.replace(`/${downloadUid}/downloads/`, `/${token.playbackId}/downloads/`);
+        }
+      }
+      return json({ downloads });
+    }
+  }
+
   if (path === "/api/uploads/tus" && request.method === "POST") {
+    requireEditorRole(session);
     const input = await requestBody(request);
     const fileSize = Math.round(clamp(input.fileSize, 1, 30 * 1024 * 1024 * 1024, 0));
     if (!fileSize) throw Object.assign(new Error("A valid file size is required."), { status: 400 });
@@ -299,7 +387,7 @@ async function handler(request) {
     return json({ uploadURL, uid, visibility: privacy.visibility, scheduledDeletion: privacy.scheduledDeletion || null });
   }
 
-  const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|settings|captions|share|email))?$/);
+  const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|settings|captions|share|email|publishing|strapi))?$/);
   if (!videoMatch) throw Object.assign(new Error("Not found."), { status: 404 });
   const [, uid, action] = videoMatch;
 
@@ -310,12 +398,14 @@ async function handler(request) {
   }
 
   if (action === "playback" && request.method === "POST") {
+    enforceRateLimit(request, "playback-token", { limit: 120, windowMs: 60 * 60 * 1000 });
     const video = await getAuthorisedVideo(session, uid);
     const input = await requestBody(request);
     return json({ playback: await createPlayback(video, input.expiresHours || 1) });
   }
 
   if (action === "clip" && request.method === "POST") {
+    requireEditorRole(session);
     const source = await getAuthorisedVideo(session, uid);
     if (!source.readyToStream) throw Object.assign(new Error("The source video is still processing."), { status: 409 });
     const input = await requestBody(request);
@@ -339,6 +429,7 @@ async function handler(request) {
   }
 
   if (action === "settings" && request.method === "POST") {
+    requireEditorRole(session);
     const video = await getAuthorisedVideo(session, uid);
     const input = await requestBody(request);
     const privacy = privacyFields(input.visibility, input.temporaryDays);
@@ -356,6 +447,7 @@ async function handler(request) {
   }
 
   if (action === "captions" && request.method === "POST") {
+    requireEditorRole(session);
     await getAuthorisedVideo(session, uid);
     const input = await requestBody(request);
     const language = String(input.language || "en").toLowerCase();
@@ -364,7 +456,13 @@ async function handler(request) {
     return json({ caption }, 202);
   }
 
+  if (action === "captions" && request.method === "GET") {
+    await getAuthorisedVideo(session, uid);
+    return json({ captions: await cloudflare(`/stream/${uid}/captions`) });
+  }
+
   if (action === "share" && request.method === "POST") {
+    requireEditorRole(session);
     const video = await getAuthorisedVideo(session, uid);
     const input = await requestBody(request);
     const shareId = createShareId(video, input);
@@ -372,7 +470,27 @@ async function handler(request) {
     return json({ share: { id: shareId, watchUrl: `${applicationOrigin(request)}/?share=${encodeURIComponent(shareId)}`, expiresAt: new Date(claim.exp * 1000).toISOString() } });
   }
 
+  if ((action === "publishing" && request.method === "GET") || (action === "strapi" && request.method === "POST")) {
+    if (action === "strapi") requireEditorRole(session);
+    const video = await getAuthorisedVideo(session, uid);
+    const safe = publicVideo(video);
+    const playback = await createPlayback(video, 1);
+    const publicWatchUrl = `${applicationOrigin(request)}/?watch=${encodeURIComponent(video.uid)}`;
+    const input = request.method === "POST" ? await requestBody(request) : {};
+    const stableWatchUrl = safe.visibility === "public" ? publicWatchUrl : input.watchUrl;
+    if (!stableWatchUrl) throw Object.assign(new Error("Create a protected share link before generating private publishing output."), { status: 400 });
+    const bundle = createPublishingBundle({ video: safe.core, watchUrl: stableWatchUrl, iframeUrl: playback.iframeUrl, thumbnailUrl: playback.thumbnailUrl, canonicalUrl: stableWatchUrl, chapters: input.chapters || [] });
+    const discourse = discourseSharePackage({ title: safe.name, description: safe.description, watchUrl: stableWatchUrl, iframeUrl: playback.iframeUrl, isPublic: safe.visibility === "public" });
+    if (action === "strapi") {
+      if (safe.visibility !== "public") throw Object.assign(new Error("Only public videos can be saved to Strapi."), { status: 400 });
+      return json({ draft: await new StrapiPublisher().saveDraft(bundle.strapiDraft) }, 201);
+    }
+    return json({ publishing: bundle, discourse });
+  }
+
   if (action === "email" && request.method === "POST") {
+    requireEditorRole(session);
+    enforceRateLimit(request, "email", { limit: 30, windowMs: 60 * 60 * 1000 });
     const video = await getAuthorisedVideo(session, uid);
     if (!video.readyToStream) throw Object.assign(new Error("The video is not ready to send."), { status: 409 });
     return json({ sent: await sendVideoEmail(request, session, video, await requestBody(request)) });
@@ -386,7 +504,7 @@ export default async function api(request) {
     return await handler(request);
   } catch (error) {
     console.error("Vivad Video API error", { message: error.message, stack: error.stack });
-    return json({ error: error.message || "Unexpected server error." }, error.status || 500);
+    return json({ error: error.message || "Unexpected server error." }, error.status || 500, error.retryAfter ? { "retry-after": String(error.retryAfter) } : {});
   }
 }
 
