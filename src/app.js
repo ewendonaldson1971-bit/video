@@ -2,6 +2,7 @@ import "./styles.css";
 
 const app = document.querySelector("#app");
 const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get("demo") === "1";
+const demoOriginMismatch = demoMode && new URLSearchParams(location.search).get("origin-test") === "1";
 const state = {
   token: sessionStorage.getItem("vivadVideoSession") || "",
   session: null,
@@ -35,6 +36,7 @@ const demoVideo = {
   thumbnail: null,
   thumbnailTimestampPct: 0.35,
   scheduledDeletion: null,
+  allowedOrigins: demoOriginMismatch ? ["old-video-app.example"] : [],
 };
 
 function escapeHtml(value) {
@@ -130,6 +132,10 @@ async function demoApi(path, options) {
   if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null };
   if (path.includes("/clip")) return { video: { ...demoVideo, uid: "demo-edited-video", name: "Customer installation – edit.mp4", status: { state: "queued", pctComplete: "0" }, readyToStream: false } };
   if (path.includes("/settings")) return { video: demoVideo };
+  if (path.includes("/origins")) {
+    demoVideo.allowedOrigins = [];
+    return { video: demoVideo };
+  }
   if (path.includes("/captions")) return { caption: { status: "inprogress" } };
   if (path.includes("/share")) return { share: { watchUrl: "https://example.com/video", expiresAt: new Date(Date.now() + 30 * 86400000).toISOString() } };
   if (path.includes("/email")) return { sent: { messageId: "demo-message", accepted: ["customer@example.com"] } };
@@ -659,6 +665,20 @@ function renderLibrary() {
   });
 }
 
+function playbackAllowedOnCurrentHost(video) {
+  const origins = Array.isArray(video?.allowedOrigins) ? video.allowedOrigins : [];
+  if (!origins.length) return true;
+  const hostname = window.location.hostname.toLowerCase();
+  return origins.some((origin) => {
+    const allowed = String(origin || "").trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+    if (allowed.startsWith("*.")) {
+      const root = allowed.slice(2);
+      return hostname === root || hostname.endsWith(`.${root}`);
+    }
+    return hostname === allowed;
+  });
+}
+
 async function selectVideo(uid) {
   setBusy(true);
   try {
@@ -677,11 +697,13 @@ function renderEditor() {
   const video = state.selected;
   if (!video) return navigate("library");
   const duration = Math.max(0.1, video.duration || 0.1);
+  const playbackOriginBlocked = video.readyToStream && !playbackAllowedOnCurrentHost(video);
   document.querySelector("#view").innerHTML = `
     <section class="panel">
       <div class="panel-header"><div><p class="eyebrow">Step 03</p><h2>Edit video</h2></div><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${video.readyToStream ? video.visibility : "processing"}</span></div>
       <div class="panel-body">
         ${video.readyToStream ? "" : `<div class="status-banner info" style="margin-bottom:20px"><span>Cloudflare is processing this video (${escapeHtml(video.status?.pctComplete || "0")}% complete).</span><button class="button button-secondary button-small" id="check-status">Check status</button></div>`}
+        ${playbackOriginBlocked ? `<div class="status-banner error" style="margin-bottom:20px" role="alert"><span>This older video does not allow playback on ${escapeHtml(window.location.hostname)}.</span><button class="button button-secondary button-small" id="repair-playback-origin" type="button">Allow playback here</button></div>` : ""}
         <div class="editor-layout">
           <div>
             ${state.playback?.iframeUrl ? `<iframe class="player-frame" id="stream-player" src="${escapeHtml(state.playback.iframeUrl)}" title="Video preview" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>` : `<div class="player-placeholder"><div><span class="loading"></span><p>${video.readyToStream ? "Preparing secure preview…" : "Preview appears when processing is complete."}</p></div></div>`}
@@ -913,6 +935,7 @@ function bindEditor(duration) {
     markSettingsDirty("Access changed. Save changes to apply it.");
   }));
   document.querySelector("#check-status")?.addEventListener("click", () => refreshSelected());
+  document.querySelector("#repair-playback-origin")?.addEventListener("click", repairPlaybackOrigin);
   document.querySelector("#save-settings").addEventListener("click", saveSettings);
   document.querySelector("#undo-settings").addEventListener("click", renderEditor);
   document.querySelector("#create-clip").addEventListener("click", createClip);
@@ -921,6 +944,19 @@ function bindEditor(duration) {
   document.querySelector("#caption-file").addEventListener("change", uploadCaptionFile);
   document.querySelector("#generate-mp4").addEventListener("click", () => generateDownload("default"));
   document.querySelector("#generate-audio").addEventListener("click", () => generateDownload("audio"));
+}
+
+async function repairPlaybackOrigin() {
+  setBusy(true);
+  try {
+    const result = await api(`/videos/${state.selected.uid}/origins`, { method: "POST" });
+    state.selected = result.video;
+    state.playback = null;
+    state.playbackRequested = false;
+    toast("Playback is now allowed on Vivad Video.");
+    await refreshSelected(false);
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
 }
 
 async function refreshSelected(notify = true) {

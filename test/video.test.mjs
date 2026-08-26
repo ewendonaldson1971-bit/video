@@ -19,6 +19,13 @@ test("configured origins are normalised and include the Stream player host", () 
   );
 });
 
+test("restricted origins always include the Vivad Video application host", () => {
+  assert.deepEqual(
+    configuredAllowedOrigins("videos.vivad.com.au", "customer-example.cloudflarestream.com", "vivad-video.netlify.app"),
+    ["videos.vivad.com.au", "vivad-video.netlify.app", "customer-example.cloudflarestream.com"],
+  );
+});
+
 test("temporary videos are private and scheduled at least 30 days away", () => {
   const result = privacyFields("temporary", 1);
   assert.equal(result.visibility, "temporary");

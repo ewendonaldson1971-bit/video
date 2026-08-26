@@ -85,9 +85,12 @@ explicitly configured to permit sender aliases.
 `customer-abc123` or the full customer hostname. `STREAM_ALLOWED_ORIGINS` is
 optional. Leaving it empty allows the player to appear in any host app; signed
 URLs still protect private and temporary videos. If origins are restricted,
-include every SPARK/Lotus host and the customer Stream hostname so emailed
-watch pages continue to work. Saving a video's settings with the variable empty
-also clears any older per-video origin restriction.
+include every SPARK/Lotus host. Vivad Video's `PUBLIC_APP_URL` hostname and the
+customer Stream hostname are added automatically so editor and emailed watch
+pages continue to work. Older videos display an **Allow playback here** repair
+action when their stored restriction does not include the current app host.
+Saving a video's settings with the variable empty also clears any older
+per-video origin restriction.
 
 ## Host-app integration
 

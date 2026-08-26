@@ -22,13 +22,13 @@ export function normaliseVisibility(value) {
   return normaliseAccessPolicy(value);
 }
 
-export function configuredAllowedOrigins(value, streamHostname) {
+export function configuredAllowedOrigins(value, streamHostname, applicationHostname = "") {
   const origins = String(value || "")
     .split(",")
     .map((origin) => origin.trim().replace(/^https?:\/\//, "").replace(/\/$/, ""))
     .filter(Boolean);
   if (!origins.length) return [];
-  return [...new Set([...origins, streamHostname].filter(Boolean))];
+  return [...new Set([...origins, applicationHostname, streamHostname].filter(Boolean))];
 }
 
 export function privacyFields(visibility, temporaryDays = 30) {
@@ -78,6 +78,7 @@ export function publicVideo(video) {
     scheduledDeletion: video.scheduledDeletion || null,
     creator: video.creator || null,
     clippedFrom: video.clippedFrom || null,
+    allowedOrigins: Array.isArray(video.allowedOrigins) ? video.allowedOrigins : [],
     purpose: core.purpose,
     access: core.access,
     description: core.description,

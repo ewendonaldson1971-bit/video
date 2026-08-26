@@ -43,8 +43,11 @@ function streamHost() {
   return configured.includes(".") ? configured : `${configured}.cloudflarestream.com`;
 }
 
-function allowedOrigins() {
-  return configuredAllowedOrigins(process.env.STREAM_ALLOWED_ORIGINS, streamHost());
+function allowedOrigins(request) {
+  const configured = String(process.env.STREAM_ALLOWED_ORIGINS || "").trim();
+  if (!configured) return [];
+  const appHostname = new URL(applicationOrigin(request)).hostname;
+  return configuredAllowedOrigins(configured, streamHost(), appHostname);
 }
 
 function shareSecret() {
@@ -296,7 +299,7 @@ async function handler(request) {
       name: String(input.name || "Imported video").trim().slice(0, 180),
       creator: creatorFor(session),
       requireSignedURLs: privacy.requireSignedURLs,
-      allowedOrigins: allowedOrigins(),
+      allowedOrigins: allowedOrigins(request),
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, 0.25),
       meta: modelMetadata(input),
     };
@@ -364,7 +367,7 @@ async function handler(request) {
       requiresignedurls: privacy.requireSignedURLs,
       scheduleddeletion: privacy.scheduledDeletion,
     };
-    const origins = allowedOrigins();
+    const origins = allowedOrigins(request);
     metadata.allowedorigins = JSON.stringify(origins);
 
     const response = await fetch(`${API_ROOT}/accounts/${required("CLOUDFLARE_ACCOUNT_ID")}/stream?direct_user=true`, {
@@ -387,7 +390,7 @@ async function handler(request) {
     return json({ uploadURL, uid, visibility: privacy.visibility, scheduledDeletion: privacy.scheduledDeletion || null });
   }
 
-  const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|settings|captions|share|email|publishing|strapi))?$/);
+  const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|settings|origins|captions|share|email|publishing|strapi))?$/);
   if (!videoMatch) throw Object.assign(new Error("Not found."), { status: 404 });
   const [, uid, action] = videoMatch;
 
@@ -422,7 +425,7 @@ async function handler(request) {
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, 0.5),
     };
     if (privacy.scheduledDeletion) body.scheduledDeletion = privacy.scheduledDeletion;
-    const origins = allowedOrigins();
+    const origins = allowedOrigins(request);
     body.allowedOrigins = origins;
     const clip = await cloudflare("/stream/clip", { method: "POST", body: JSON.stringify(body) });
     return json({ video: publicVideo(clip) }, 201);
@@ -440,9 +443,19 @@ async function handler(request) {
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, video.thumbnailTimestampPct || 0),
       meta: modelMetadata({ ...input, access: privacy.visibility }, video.meta),
     };
-    const origins = allowedOrigins();
+    const origins = allowedOrigins(request);
     body.allowedOrigins = origins;
     const updated = await cloudflare(`/stream/${uid}`, { method: "POST", body: JSON.stringify(body) });
+    return json({ video: publicVideo(updated) });
+  }
+
+  if (action === "origins" && request.method === "POST") {
+    requireEditorRole(session);
+    await getAuthorisedVideo(session, uid);
+    const updated = await cloudflare(`/stream/${uid}`, {
+      method: "POST",
+      body: JSON.stringify({ uid, allowedOrigins: allowedOrigins(request) }),
+    });
     return json({ video: publicVideo(updated) });
   }
 
