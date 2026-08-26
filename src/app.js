@@ -12,13 +12,22 @@ const state = {
   playbackRequested: false,
   file: null,
   upload: null,
+  createMode: "upload",
+  recorder: null,
+  recordingStream: null,
+  recordingChunks: [],
+  recordingStartedAt: 0,
+  recordingTimer: null,
   busy: false,
 };
 
 const demoVideo = {
   uid: "demo-video-id",
   name: "Customer installation walkthrough.mp4",
-  visibility: "private",
+  visibility: "expiring",
+  access: "expiring",
+  purpose: "client",
+  description: "A secure customer video.",
   duration: 223,
   created: new Date().toISOString(),
   readyToStream: true,
@@ -122,7 +131,7 @@ async function demoApi(path, options) {
   if (path.includes("/clip")) return { video: { ...demoVideo, uid: "demo-edited-video", name: "Customer installation – edit.mp4", status: { state: "queued", pctComplete: "0" }, readyToStream: false } };
   if (path.includes("/settings")) return { video: demoVideo };
   if (path.includes("/captions")) return { caption: { status: "inprogress" } };
-  if (path.includes("/share")) return { playback: { watchUrl: "https://example.com/video", expiresAt: new Date(Date.now() + 86400000).toISOString() } };
+  if (path.includes("/share")) return { share: { watchUrl: "https://example.com/video", expiresAt: new Date(Date.now() + 30 * 86400000).toISOString() } };
   if (path.includes("/email")) return { sent: { messageId: "demo-message", accepted: ["customer@example.com"] } };
   return {};
 }
@@ -243,14 +252,19 @@ function navigate(section) {
   if (section === "share") renderShare();
 }
 
-function visibilityOptions(current = "private", prefix = "visibility") {
+function visibilityOptions(current = "expiring", prefix = "visibility") {
+  const options = [
+    ["public", "Public", "Indexable and suitable for website publishing."],
+    ["link", "Anyone with the link", "Unlisted and excluded from SEO publishing."],
+    ["organisation", "Organisation", "Requires authenticated Vivad access."],
+    ["team", "Team or group", "Restricted to an authorised team."],
+    ["client", "Named client", "Shared through a Vivad-controlled watch page."],
+    ["expiring", "Expiring link", "Protected playback through a time-limited share page."],
+    ["temporary", "Temporary", "Protected and automatically deleted after retention."],
+  ];
   return `
     <div class="visibility-options" role="radiogroup" aria-label="Video access">
-      ${[
-        ["public", "Public", "Anyone with the link can watch."],
-        ["private", "Private", "Only an expiring signed link can play."],
-        ["temporary", "Temporary", "Private and automatically deleted after its retention period."],
-      ].map(([value, label, description]) => `
+      ${options.map(([value, label, description]) => `
         <div class="visibility-option">
           <input id="${prefix}-${value}" type="radio" name="${prefix}" value="${value}" aria-describedby="${prefix}-${value}-description" ${current === value ? "checked" : ""}>
           <label for="${prefix}-${value}">
@@ -262,13 +276,34 @@ function visibilityOptions(current = "private", prefix = "visibility") {
     </div>`;
 }
 
+function purposeOptions(current = "general") {
+  return `<label class="field"><span>Purpose</span><select name="purpose">
+    ${[["website", "Website content"], ["training", "Training"], ["sop", "SOP"], ["internal", "Internal update"], ["client", "Client message"], ["general", "General video"]]
+      .map(([value, label]) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`).join("")}
+  </select></label>`;
+}
+
+function creationDetails(title = "Video details") {
+  return `<div class="creation-details"><h3>${title}</h3>
+    <label class="field"><span>Video name</span><input name="name" value="${escapeHtml(state.file?.name || "")}" placeholder="Customer video" required></label>
+    ${purposeOptions("general")}
+    <label class="field"><span>Description</span><textarea name="description" placeholder="What this video covers"></textarea></label>
+    <span class="field-label">Access</span>${visibilityOptions("expiring", "uploadVisibility")}
+    <label class="field hidden" id="upload-retention" style="margin-top:14px"><span>Delete automatically after</span><select name="temporaryDays"><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
+  </div>`;
+}
+
 function renderUpload() {
   const file = state.file;
   document.querySelector("#view").innerHTML = `
     <section class="panel">
-      <div class="panel-header"><div><p class="eyebrow">Step 01</p><h2>Upload a video</h2></div><span class="badge badge-private">Resumable upload</span></div>
-      <div class="panel-body grid-two">
-        <div>
+      <div class="panel-header"><div><p class="eyebrow">Step 01</p><h2>Create a video</h2></div><span class="badge badge-expiring">Secure media workspace</span></div>
+      <div class="panel-body">
+        <div class="creation-tabs" role="tablist" aria-label="Creation source">
+          ${[["upload", "Upload a file"], ["record", "Record"], ["import", "Import a link"]].map(([value, label]) => `<button type="button" role="tab" aria-selected="${state.createMode === value}" class="button ${state.createMode === value ? "button-primary" : "button-quiet"}" data-create-mode="${value}">${label}</button>`).join("")}
+        </div>
+        <div class="grid-two create-workspace">
+        <div class="create-source ${state.createMode === "upload" ? "" : "hidden"}" data-create-panel="upload">
           <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Select a video file">
             <div>
               <div class="upload-icon">↑</div>
@@ -281,16 +316,25 @@ function renderUpload() {
           </div>
           <div id="upload-progress"></div>
         </div>
+        <div class="create-source ${state.createMode === "record" ? "" : "hidden"}" data-create-panel="record">
+          <div class="record-stage"><video id="record-preview" autoplay muted playsinline></video><div id="record-placeholder"><div class="upload-icon">●</div><h3>Record in your browser</h3><p class="muted">Camera, screen or audio narration. You will preview the result before uploading.</p></div></div>
+          <div class="record-controls">
+            <label class="field"><span>Recording type</span><select id="record-type"><option value="camera">Camera and microphone</option><option value="screen">Screen and microphone</option><option value="screen-camera">Screen with camera preview</option><option value="audio">Audio-only narration</option></select></label>
+            <label class="field"><span>Countdown</span><select id="record-countdown"><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="0">No countdown</option></select></label>
+            <div class="button-row"><button class="button button-primary" id="start-recording" type="button">Start recording</button><button class="button button-secondary hidden" id="pause-recording" type="button">Pause</button><button class="button button-danger hidden" id="stop-recording" type="button">Stop</button><span id="record-elapsed" aria-live="polite">00:00</span></div>
+          </div>
+        </div>
+        <div class="create-source ${state.createMode === "import" ? "" : "hidden"}" data-create-panel="import">
+          <div class="tool-card"><h3>Import a direct video-file URL</h3><p class="muted">For an HTTPS media file in R2, S3, GCS or another public host. The host must support HEAD and ranged GET requests.</p><label class="field"><span>Direct file URL</span><input id="direct-import-url" type="url" placeholder="https://example.com/video.mp4"></label><button class="button button-secondary" id="import-direct" type="button">Import to Cloudflare</button></div>
+          <div class="tool-card" style="margin-top:18px"><h3>Add YouTube or Vimeo</h3><p class="muted">Vivad stores an external reference and uses the official provider player. Editing and Cloudflare privacy require the original file.</p><label class="field"><span>Provider URL</span><input id="external-video-url" type="url" placeholder="https://www.youtube.com/watch?v=..."></label><button class="button button-secondary" id="add-external" type="button">Add external reference</button><p class="expiry-note">Requires a configured production video database; audiovisual content is never downloaded.</p></div>
+        </div>
         <form id="upload-form">
-          <label class="field"><span>Video name</span><input name="name" value="${escapeHtml(file?.name || "")}" placeholder="Customer video" required></label>
+          ${creationDetails()}
           <label class="field"><span>Maximum expected duration</span><select name="maxDurationSeconds"><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600" selected>1 hour</option><option value="7200">2 hours</option><option value="18000">5 hours</option></select></label>
-          <span class="field-label">Access</span>
-          ${visibilityOptions("private", "uploadVisibility")}
-          <label class="field hidden" id="upload-retention" style="margin-top:14px"><span>Delete automatically after</span><select name="temporaryDays"><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
-          <p class="expiry-note">Private email links can be set to expire between 15 minutes and 24 hours. Temporary video deletion starts at 30 days.</p>
+          <p class="expiry-note">Temporary deletion starts at 30 days. Protected sharing uses a stable Vivad watch page and fresh playback tokens.</p>
           <button class="button button-primary" type="submit" data-busy ${file ? "" : "disabled"}>Upload to Cloudflare</button>
         </form>
-      </div>
+      </div></div>
     </section>`;
   bindUpload();
 }
@@ -308,6 +352,12 @@ function bindUpload() {
   dropzone.addEventListener("drop", (event) => selectFile(event.dataTransfer.files[0]));
   document.querySelectorAll('input[name="uploadVisibility"]').forEach((radio) => radio.addEventListener("change", () => document.querySelector("#upload-retention").classList.toggle("hidden", radio.value !== "temporary" || !radio.checked)));
   document.querySelector("#upload-form").addEventListener("submit", startUpload);
+  document.querySelectorAll("[data-create-mode]").forEach((button) => button.addEventListener("click", () => { state.createMode = button.dataset.createMode; renderUpload(); }));
+  document.querySelector("#start-recording")?.addEventListener("click", startRecording);
+  document.querySelector("#pause-recording")?.addEventListener("click", toggleRecordingPause);
+  document.querySelector("#stop-recording")?.addEventListener("click", stopRecording);
+  document.querySelector("#import-direct")?.addEventListener("click", importDirectUrl);
+  document.querySelector("#add-external")?.addEventListener("click", () => toast("External references need VIDEO_DATABASE_URL before they can be stored safely.", "error"));
 }
 
 function selectFile(file) {
@@ -324,6 +374,138 @@ function selectFile(file) {
   renderUpload();
 }
 
+function preferredRecordingMimeType() {
+  return ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm", "audio/webm"]
+    .find((type) => window.MediaRecorder?.isTypeSupported(type)) || "";
+}
+
+async function countdown(seconds) {
+  const target = document.querySelector("#record-placeholder");
+  for (let remaining = seconds; remaining > 0; remaining -= 1) {
+    if (target) target.innerHTML = `<div class="countdown">${remaining}</div><p>Recording starts shortly…</p>`;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+async function screenWithCameraStream() {
+  const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  const camera = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  const canvas = document.createElement("canvas");
+  const screenVideo = document.createElement("video");
+  const cameraVideo = document.createElement("video");
+  screenVideo.srcObject = screen;
+  cameraVideo.srcObject = camera;
+  screenVideo.muted = cameraVideo.muted = true;
+  await Promise.all([screenVideo.play(), cameraVideo.play()]);
+  canvas.width = screenVideo.videoWidth || 1280;
+  canvas.height = screenVideo.videoHeight || 720;
+  const context = canvas.getContext("2d");
+  const draw = () => {
+    context.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
+    const bubbleWidth = Math.round(canvas.width * 0.22);
+    const bubbleHeight = Math.round(bubbleWidth * 0.75);
+    const margin = Math.round(canvas.width * 0.025);
+    context.save();
+    context.beginPath();
+    context.roundRect(canvas.width - bubbleWidth - margin, canvas.height - bubbleHeight - margin, bubbleWidth, bubbleHeight, 18);
+    context.clip();
+    context.drawImage(cameraVideo, canvas.width - bubbleWidth - margin, canvas.height - bubbleHeight - margin, bubbleWidth, bubbleHeight);
+    context.restore();
+    state.compositionFrame = requestAnimationFrame(draw);
+  };
+  draw();
+  const composed = canvas.captureStream(30);
+  const audioTrack = camera.getAudioTracks()[0] || screen.getAudioTracks()[0];
+  if (audioTrack) composed.addTrack(audioTrack);
+  composed._sourceStreams = [screen, camera];
+  return composed;
+}
+
+async function startRecording() {
+  if (!window.isSecureContext || !navigator.mediaDevices || !window.MediaRecorder) return toast("Recording requires a supported browser over HTTPS.", "error");
+  const kind = document.querySelector("#record-type").value;
+  const seconds = Number(document.querySelector("#record-countdown").value || 0);
+  try {
+    await countdown(seconds);
+    let stream;
+    if (kind === "camera") stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    if (kind === "audio") stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (kind === "screen") {
+      const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = new MediaStream([...screen.getVideoTracks(), ...(microphone.getAudioTracks().length ? microphone.getAudioTracks() : screen.getAudioTracks())]);
+      stream._sourceStreams = [screen, microphone];
+    }
+    if (kind === "screen-camera") stream = await screenWithCameraStream();
+    state.recordingStream = stream;
+    state.recordingChunks = [];
+    const preview = document.querySelector("#record-preview");
+    preview.srcObject = stream;
+    preview.classList.remove("hidden");
+    document.querySelector("#record-placeholder").classList.add("hidden");
+    const mimeType = preferredRecordingMimeType();
+    state.recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    state.recorder.addEventListener("dataavailable", (event) => { if (event.data.size) state.recordingChunks.push(event.data); });
+    state.recorder.addEventListener("stop", finishRecording, { once: true });
+    stream.getVideoTracks()[0]?.addEventListener("ended", () => { if (state.recorder?.state !== "inactive") stopRecording(); }, { once: true });
+    state.recorder.start(1000);
+    state.recordingStartedAt = Date.now();
+    state.recordingTimer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - state.recordingStartedAt) / 1000);
+      const target = document.querySelector("#record-elapsed");
+      if (target) target.textContent = formatTime(elapsed);
+    }, 500);
+    document.querySelector("#start-recording").classList.add("hidden");
+    document.querySelector("#pause-recording").classList.remove("hidden");
+    document.querySelector("#stop-recording").classList.remove("hidden");
+  } catch (error) { toast(error.name === "NotAllowedError" ? "Camera, microphone or screen permission was not granted." : error.message, "error"); }
+}
+
+function toggleRecordingPause() {
+  if (!state.recorder || state.recorder.state === "inactive") return;
+  const paused = state.recorder.state === "paused";
+  paused ? state.recorder.resume() : state.recorder.pause();
+  document.querySelector("#pause-recording").textContent = paused ? "Pause" : "Resume";
+}
+
+function stopRecording() {
+  if (state.recorder?.state && state.recorder.state !== "inactive") state.recorder.stop();
+}
+
+function finishRecording() {
+  clearInterval(state.recordingTimer);
+  cancelAnimationFrame(state.compositionFrame);
+  const mimeType = state.recorder?.mimeType || "video/webm";
+  const blob = new Blob(state.recordingChunks, { type: mimeType });
+  const extension = mimeType.startsWith("audio/") ? "webm" : "webm";
+  state.recordingStream?._sourceStreams?.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
+  state.recordingStream?.getTracks().forEach((track) => track.stop());
+  state.file = new File([blob], `Vivad recording ${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}.${extension}`, { type: mimeType, lastModified: Date.now() });
+  state.createMode = "upload";
+  state.recorder = null;
+  state.recordingStream = null;
+  renderUpload();
+  toast("Recording is ready. Review its details, then upload it.");
+}
+
+async function importDirectUrl() {
+  const form = new FormData(document.querySelector("#upload-form"));
+  const url = document.querySelector("#direct-import-url").value;
+  setBusy(true);
+  try {
+    const result = await api("/imports/direct", { method: "POST", body: JSON.stringify({
+      url, name: form.get("name"), purpose: form.get("purpose"), description: form.get("description"),
+      access: form.get("uploadVisibility"), temporaryDays: Number(form.get("temporaryDays") || 30),
+    }) });
+    state.selected = result.video;
+    emitHostEvent("video.created", { uid: result.video.uid, source: "direct-url" });
+    await loadVideos(false);
+    navigate("library");
+    toast("Import started. Cloudflare is processing the video.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
 async function startUpload(event) {
   event.preventDefault();
   if (!state.file) return toast("Select a video first.", "error");
@@ -338,7 +520,10 @@ async function startUpload(event) {
         fileName: form.get("name") || state.file.name,
         fileSize: state.file.size,
         maxDurationSeconds: Number(form.get("maxDurationSeconds")),
+        access: visibility,
         visibility,
+        purpose: form.get("purpose"),
+        description: form.get("description"),
         temporaryDays: Number(form.get("temporaryDays") || 30),
       }),
     });
@@ -512,6 +697,8 @@ function renderEditor() {
             <div class="tool-card">
               <h3>Video details</h3>
               <label class="field"><span>Name</span><input id="edit-name" value="${escapeHtml(video.name)}"></label>
+              ${purposeOptions(video.purpose || "general").replace('name="purpose"', 'id="edit-purpose" name="purpose"')}
+              <label class="field"><span>Description</span><textarea id="edit-description">${escapeHtml(video.description || "")}</textarea></label>
               <span class="field-label">Access</span>
               ${visibilityOptions(video.visibility, "editVisibility")}
               <p class="access-change-status hidden" id="access-change-status" role="status">Access changed. Save changes to apply it.</p>
@@ -541,6 +728,8 @@ function editorValues() {
   const visibility = document.querySelector('input[name="editVisibility"]:checked')?.value || "private";
   return {
     name: document.querySelector("#edit-name").value.trim(),
+    purpose: document.querySelector("#edit-purpose").value,
+    description: document.querySelector("#edit-description").value.trim(),
     visibility,
     temporaryDays: Number(document.querySelector("#edit-temporary-days")?.value || 30),
     thumbnailTimestampPct: Number(document.querySelector("#thumbnail-pct").value),
@@ -718,7 +907,7 @@ async function generateCaptions() {
 function renderShare() {
   const video = state.selected;
   if (!video) return navigate("library");
-  const expiry = video.visibility === "public" ? "Public links do not expire." : "The customer link can remain active for up to 24 hours.";
+  const expiry = video.visibility === "public" ? "Public playback is available through this stable watch page." : "The Vivad share page remains stable while each protected playback token is short-lived.";
   document.querySelector("#view").innerHTML = `
     <section class="panel share-card">
       <div class="panel-header"><div><p class="eyebrow">Step 04</p><h2>Share video</h2></div><span class="badge badge-${video.visibility}">${video.visibility}</span></div>
@@ -728,7 +917,7 @@ function renderShare() {
           <div><h3>${escapeHtml(video.name)}</h3><p class="muted">${formatTime(video.duration)} · Created ${formatDate(video.created)}</p><p class="expiry-note">${expiry}</p></div>
         </div>
         <div class="grid-equal">
-          <label class="field"><span>Link expiry</span><select id="share-expiry" ${video.visibility === "public" ? "disabled" : ""}><option value="0.25">15 minutes</option><option value="1">1 hour</option><option value="6">6 hours</option><option value="12">12 hours</option><option value="24" selected>24 hours</option></select></label>
+          <label class="field"><span>Share-page expiry</span><select id="share-expiry"><option value="1">1 day</option><option value="7">7 days</option><option value="30" selected>30 days</option><option value="60">60 days</option><option value="90">90 days</option></select></label>
           <div class="field"><span>Direct link</span><button class="button button-secondary" id="copy-link" data-busy ${video.readyToStream ? "" : "disabled"}>Create and copy link</button></div>
         </div>
         <div id="share-link-result"></div>
@@ -751,18 +940,18 @@ function renderShare() {
 }
 
 async function createShareLink() {
-  const expiresHours = Number(document.querySelector("#share-expiry")?.value || 24);
-  const result = await api(`/videos/${state.selected.uid}/share`, { method: "POST", body: JSON.stringify({ expiresHours }) });
-  return result.playback;
+  const shareDays = Number(document.querySelector("#share-expiry")?.value || 30);
+  const result = await api(`/videos/${state.selected.uid}/share`, { method: "POST", body: JSON.stringify({ shareDays }) });
+  return result.share;
 }
 
 async function copyShareLink() {
   setBusy(true);
   try {
-    const playback = await createShareLink();
-    await navigator.clipboard.writeText(playback.watchUrl);
-    document.querySelector("#share-link-result").innerHTML = `<div class="status-banner"><span>Link copied to clipboard${playback.expiresAt ? ` · expires ${new Date(playback.expiresAt).toLocaleString("en-AU")}` : ""}.</span></div>`;
-    emitHostEvent("video.shared", { uid: state.selected.uid, watchUrl: playback.watchUrl, expiresAt: playback.expiresAt });
+    const share = await createShareLink();
+    await navigator.clipboard.writeText(share.watchUrl);
+    document.querySelector("#share-link-result").innerHTML = `<div class="status-banner"><span>Link copied to clipboard · expires ${new Date(share.expiresAt).toLocaleString("en-AU")}.</span></div>`;
+    emitHostEvent("video.shared", { uid: state.selected.uid, watchUrl: share.watchUrl, expiresAt: share.expiresAt });
     toast("Video link copied.");
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
@@ -782,7 +971,7 @@ async function sendEmail(event) {
         to: recipient,
         subject: form.get("subject"),
         message: form.get("message"),
-        expiresHours: Number(document.querySelector("#share-expiry")?.value || 24),
+        shareDays: Number(document.querySelector("#share-expiry")?.value || 30),
       }),
     });
     emitHostEvent("video.emailed", { uid: state.selected.uid, to: recipient, messageId: result.sent.messageId });
@@ -804,6 +993,23 @@ async function startApp() {
   emitHostEvent("editor.ready", { app: state.session?.app, context: state.session?.context });
 }
 
+async function renderPublicShare(shareId) {
+  app.innerHTML = `<main class="public-watch"><section class="watch-card"><img class="brand-logo" src="/assets/vivad-logo.png" alt="Vivad"><div class="player-placeholder"><div><span class="loading"></span><p>Preparing secure video…</p></div></div></section></main>`;
+  try {
+    const response = await fetch(`/api/public/shares/${encodeURIComponent(shareId)}`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "This video share is unavailable.");
+    document.title = `${result.video.name} · Vivad Video`;
+    app.innerHTML = `<main class="public-watch"><section class="watch-card">
+      <div class="watch-header"><img class="brand-logo" src="/assets/vivad-logo.png" alt="Vivad"><span class="badge badge-${escapeHtml(result.video.visibility)}">${escapeHtml(result.video.visibility)}</span></div>
+      <iframe class="player-frame" src="${escapeHtml(result.playback.iframeUrl)}" title="${escapeHtml(result.video.name)}" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+      <div class="watch-copy"><h1>${escapeHtml(result.video.name)}</h1>${result.video.description ? `<p>${escapeHtml(result.video.description)}</p>` : ""}<p class="muted">Shared securely with Vivad Video · expires ${new Date(result.share.expiresAt).toLocaleString("en-AU")}</p></div>
+    </section></main>`;
+  } catch (error) {
+    app.innerHTML = `<main class="public-watch"><section class="watch-card"><img class="brand-logo" src="/assets/vivad-logo.png" alt="Vivad"><div class="status-banner error" role="alert"><span>${escapeHtml(error.message)}</span></div></section></main>`;
+  }
+}
+
 async function initialise() {
   if (demoMode) {
     state.session = { sub: "demo", name: "Vivad user", app: "standalone", role: "admin", mode: "standalone" };
@@ -811,6 +1017,8 @@ async function initialise() {
     return startApp();
   }
   const params = new URLSearchParams(location.search);
+  const shareId = params.get("share");
+  if (shareId) return renderPublicShare(shareId);
   const embedToken = params.get("embedToken");
   if (embedToken) {
     try {

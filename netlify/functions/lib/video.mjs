@@ -1,4 +1,6 @@
-const VALID_VISIBILITY = new Set(["public", "private", "temporary"]);
+import { accessRequiresSignedPlayback, modelMetadata, normaliseAccessPolicy, toCoreVideo } from "./model.mjs";
+
+const VALID_VISIBILITY = new Set(["public", "link", "organisation", "team", "client", "expiring", "temporary"]);
 
 export function clamp(value, minimum, maximum, fallback) {
   const number = Number(value);
@@ -17,7 +19,7 @@ export function creatorFor(session) {
 }
 
 export function normaliseVisibility(value) {
-  return VALID_VISIBILITY.has(value) ? value : "private";
+  return normaliseAccessPolicy(value);
 }
 
 export function configuredAllowedOrigins(value, streamHostname) {
@@ -33,7 +35,7 @@ export function privacyFields(visibility, temporaryDays = 30) {
   const mode = normaliseVisibility(visibility);
   const fields = {
     visibility: mode,
-    requireSignedURLs: mode !== "public",
+    requireSignedURLs: accessRequiresSignedPlayback(mode),
   };
   if (mode === "temporary") {
     const days = Math.round(clamp(temporaryDays, 30, 1096, 30));
@@ -46,10 +48,11 @@ export function privacyFields(visibility, temporaryDays = 30) {
 }
 
 export function visibilityFromVideo(video) {
-  const explicit = video?.meta?.vivadVisibility;
+  const explicit = video?.meta?.vivadAccess || video?.meta?.vivadVisibility;
+  if (explicit === "private") return "expiring";
   if (VALID_VISIBILITY.has(explicit)) return explicit;
   if (video?.scheduledDeletion) return "temporary";
-  return video?.requireSignedURLs ? "private" : "public";
+  return video?.requireSignedURLs ? "expiring" : "public";
 }
 
 export function toTusMetadata(entries) {
@@ -60,6 +63,7 @@ export function toTusMetadata(entries) {
 }
 
 export function publicVideo(video) {
+  const core = toCoreVideo(video);
   return {
     uid: video.uid,
     name: video?.meta?.name || "Untitled video",
@@ -74,8 +78,16 @@ export function publicVideo(video) {
     scheduledDeletion: video.scheduledDeletion || null,
     creator: video.creator || null,
     clippedFrom: video.clippedFrom || null,
+    purpose: core.purpose,
+    access: core.access,
+    description: core.description,
+    tags: core.tags,
+    reviewStatus: core.reviewStatus,
+    core,
   };
 }
+
+export { modelMetadata };
 
 export function normaliseVideoList(result) {
   if (Array.isArray(result)) return result;

@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { configuredAllowedOrigins, normaliseVideoList, normaliseVisibility, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
 
-test("visibility defaults to private", () => {
-  assert.equal(normaliseVisibility("unknown"), "private");
+test("visibility defaults to expiring protected playback", () => {
+  assert.equal(normaliseVisibility("unknown"), "expiring");
   assert.equal(privacyFields("private").requireSignedURLs, true);
   assert.equal(privacyFields("public").requireSignedURLs, false);
 });
@@ -29,7 +29,7 @@ test("temporary videos are private and scheduled at least 30 days away", () => {
 
 test("visibility can be inferred from Cloudflare video data", () => {
   assert.equal(visibilityFromVideo({ requireSignedURLs: false }), "public");
-  assert.equal(visibilityFromVideo({ requireSignedURLs: true }), "private");
+  assert.equal(visibilityFromVideo({ requireSignedURLs: true }), "expiring");
   assert.equal(visibilityFromVideo({ scheduledDeletion: "2030-01-01T00:00:00Z" }), "temporary");
 });
 

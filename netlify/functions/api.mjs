@@ -1,6 +1,8 @@
 import { authenticateStandalone, authenticationProvider } from "./lib/auth.mjs";
-import { createSession, requireSession, verifyToken } from "./lib/security.mjs";
+import { createSession, requireSession, signToken, verifyToken } from "./lib/security.mjs";
 import { sendSmtpMessage } from "./lib/smtp.mjs";
+import { integrationCapabilities } from "./lib/adapters.mjs";
+import { modelMetadata, validateDirectMediaUrl } from "./lib/model.mjs";
 import {
   canAccessVideo,
   clamp,
@@ -41,6 +43,24 @@ function streamHost() {
 
 function allowedOrigins() {
   return configuredAllowedOrigins(process.env.STREAM_ALLOWED_ORIGINS, streamHost());
+}
+
+function shareSecret() {
+  return process.env.SHARE_SIGNING_SECRET || required("SESSION_SIGNING_SECRET");
+}
+
+function applicationOrigin(request) {
+  const configured = String(process.env.PUBLIC_APP_URL || "").trim();
+  if (configured) return new URL(configured).origin;
+  return new URL(request.url).origin;
+}
+
+function createShareId(video, input = {}) {
+  return signToken({ uid: video.uid, permission: "watch", download: Boolean(input.allowDownload) }, shareSecret(), {
+    issuer: "vivad-video",
+    audience: "vivad-video-share",
+    expiresInSeconds: Math.round(clamp(input.shareDays, 1, 90, 30) * 86400),
+  });
 }
 
 async function requestBody(request) {
@@ -122,14 +142,16 @@ function emailAddress(value) {
   return email;
 }
 
-async function sendVideoEmail(session, video, input) {
+async function sendVideoEmail(request, session, video, input) {
   const to = emailAddress(input.to);
   const recipientName = String(input.recipientName || "there").trim().slice(0, 80);
   const senderName = String(process.env.SMTP_FROM_NAME || "Vivad Video").trim().slice(0, 80);
   const fromEmail = process.env.SMTP_FROM_EMAIL || required("SMTP_USER");
   const subject = String(input.subject || `Your video: ${video?.meta?.name || "Video"}`).trim().slice(0, 160);
   const message = String(input.message || "Here is the video we discussed.").trim().slice(0, 2000);
-  const playback = await createPlayback(video, input.expiresHours || 24);
+  const shareId = createShareId(video, input);
+  const watchUrl = `${applicationOrigin(request)}/?share=${encodeURIComponent(shareId)}`;
+  const playback = await createPlayback(video, 1);
   const thumbnailTime = Math.max(0, Number(video.duration || 0) * Number(video.thumbnailTimestampPct || 0));
   const thumbnailUrl = `${playback.thumbnailUrl}?time=${thumbnailTime.toFixed(2)}s&height=360`;
   const thumbnailResponse = await fetch(thumbnailUrl);
@@ -146,7 +168,7 @@ async function sendVideoEmail(session, video, input) {
 
   const safeName = escapeHtml(recipientName);
   const safeMessage = escapeHtml(message).replaceAll("\n", "<br>");
-  const safeWatchUrl = escapeHtml(playback.watchUrl);
+  const safeWatchUrl = escapeHtml(watchUrl);
   const preview = attachments.length
     ? `<a href="${safeWatchUrl}" style="display:block;text-decoration:none"><img src="cid:vivad-video-preview" width="536" alt="Watch the video" style="display:block;width:100%;max-width:536px;height:auto;border:0;border-radius:8px"></a>`
     : "";
@@ -160,11 +182,11 @@ async function sendVideoEmail(session, video, input) {
     from: { name: senderName, address: fromEmail },
     to,
     subject,
-    text: `Hi ${recipientName},\n\n${message}\n\nWatch the video: ${playback.watchUrl}\n\nKind regards,\n${senderName}`,
+    text: `Hi ${recipientName},\n\n${message}\n\nWatch the video: ${watchUrl}\n\nKind regards,\n${senderName}`,
     html: `<!doctype html><html><body style="margin:0;background:#f5f6f8;font-family:Arial,sans-serif;color:#24262a"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:28px 12px"><table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px;background:#fff;border-radius:8px"><tr><td style="padding:32px"><div style="height:5px;width:62px;background:#e4002b;margin-bottom:24px"></div><h1 style="margin:0 0 18px;color:#53565a;font-size:28px">Your video is ready</h1><p style="font-size:16px;line-height:24px">Hi ${safeName},</p><p style="font-size:16px;line-height:24px">${safeMessage}</p>${preview}<table role="presentation" cellspacing="0" cellpadding="0" style="margin:24px 0"><tr><td bgcolor="#478fe1" style="border-radius:999px"><a href="${safeWatchUrl}" style="display:inline-block;padding:14px 24px;color:#fff;font-weight:700;text-decoration:none">Watch video</a></td></tr></table><p style="font-size:16px;line-height:24px">Kind regards,<br>${escapeHtml(senderName)}</p></td></tr></table></td></tr></table></body></html>`,
     inlineImage: attachments[0] ? { filename: attachments[0].filename, content: attachments[0].content, contentType: attachments[0].contentType, cid: attachments[0].cid } : null,
   });
-  return { messageId: info.messageId, accepted: [to], rejected: [], expiresAt: playback.expiresAt };
+  return { messageId: info.messageId, accepted: [to], rejected: [], shareExpiresAt: new Date(verifyToken(shareId, shareSecret(), { issuer: "vivad-video", audience: "vivad-video-share" }).exp * 1000).toISOString() };
 }
 
 async function handler(request) {
@@ -174,7 +196,18 @@ async function handler(request) {
   if (path === "/api/health" && request.method === "GET") {
     const provider = authenticationProvider();
     const authenticationConfigured = provider === "vivad" ? Boolean(process.env.VIVAD_AUTH_URL) : provider === "apps-script" ? Boolean(process.env.APPS_SCRIPT_AUTH_URL) : Boolean(process.env.APP_ACCESS_KEY);
-    return json({ ok: true, service: "Vivad Video", cloudflareConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN), emailConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS), authenticationConfigured, authenticationProvider: provider });
+    return json({ ok: true, service: "Vivad Video", cloudflareConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN), emailConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS), authenticationConfigured, authenticationProvider: provider, integrations: integrationCapabilities() });
+  }
+
+  const publicShareMatch = path.match(/^\/api\/public\/shares\/(.+)$/);
+  if (publicShareMatch && request.method === "GET") {
+    let claim;
+    try { claim = verifyToken(decodeURIComponent(publicShareMatch[1]), shareSecret(), { issuer: "vivad-video", audience: "vivad-video-share" }); }
+    catch (error) { throw Object.assign(new Error(error.message), { status: 401 }); }
+    if (claim.permission !== "watch" || !claim.uid) throw Object.assign(new Error("Invalid video share."), { status: 401 });
+    const video = await getVideo(String(claim.uid));
+    if (!video.readyToStream) throw Object.assign(new Error("This video is not ready yet."), { status: 409 });
+    return json({ video: publicVideo(video), playback: await createPlayback(video, 1), share: { expiresAt: new Date(claim.exp * 1000).toISOString(), allowDownload: Boolean(claim.download) } });
   }
 
   if (path === "/api/session/login" && request.method === "POST") {
@@ -210,16 +243,34 @@ async function handler(request) {
     return json({ videos: videos.map(publicVideo) });
   }
 
+  if (path === "/api/imports/direct" && request.method === "POST") {
+    const input = await requestBody(request);
+    const mediaUrl = validateDirectMediaUrl(input.url);
+    const privacy = privacyFields(input.access || input.visibility, input.temporaryDays);
+    const body = {
+      input: mediaUrl,
+      name: String(input.name || "Imported video").trim().slice(0, 180),
+      creator: creatorFor(session),
+      requireSignedURLs: privacy.requireSignedURLs,
+      allowedOrigins: allowedOrigins(),
+      thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, 0.25),
+      meta: modelMetadata(input),
+    };
+    if (privacy.scheduledDeletion) body.scheduledDeletion = privacy.scheduledDeletion;
+    const imported = await cloudflare("/stream/copy", { method: "POST", body: JSON.stringify(body) });
+    return json({ video: publicVideo(imported) }, 202);
+  }
+
   if (path === "/api/uploads/tus" && request.method === "POST") {
     const input = await requestBody(request);
     const fileSize = Math.round(clamp(input.fileSize, 1, 30 * 1024 * 1024 * 1024, 0));
     if (!fileSize) throw Object.assign(new Error("A valid file size is required."), { status: 400 });
     const fileName = String(input.fileName || "video").slice(0, 180);
     const maxDurationSeconds = Math.round(clamp(input.maxDurationSeconds, 1, 36000, 3600));
-    const privacy = privacyFields(input.visibility, input.temporaryDays);
+    const privacy = privacyFields(input.access || input.visibility, input.temporaryDays);
+    const coreMeta = modelMetadata(input, { name: fileName });
     const metadata = {
-      name: fileName,
-      vivadVisibility: privacy.visibility,
+      ...coreMeta,
       maxDurationSeconds,
       expiry: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       requiresignedurls: privacy.requireSignedURLs,
@@ -277,7 +328,7 @@ async function handler(request) {
       endTimeSeconds: end,
       creator: creatorFor(session),
       requireSignedURLs: privacy.requireSignedURLs,
-      meta: { name: String(input.name || `${source?.meta?.name || "Video"} – edit`).slice(0, 180), vivadVisibility: privacy.visibility },
+      meta: modelMetadata({ ...input, name: input.name || `${source?.meta?.name || "Video"} – edit`, access: privacy.visibility }, source.meta),
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, 0.5),
     };
     if (privacy.scheduledDeletion) body.scheduledDeletion = privacy.scheduledDeletion;
@@ -296,7 +347,7 @@ async function handler(request) {
       requireSignedURLs: privacy.requireSignedURLs,
       scheduledDeletion: privacy.scheduledDeletion || null,
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, video.thumbnailTimestampPct || 0),
-      meta: { ...(video.meta || {}), name: String(input.name || video?.meta?.name || "Video").slice(0, 180), vivadVisibility: privacy.visibility },
+      meta: modelMetadata({ ...input, access: privacy.visibility }, video.meta),
     };
     const origins = allowedOrigins();
     body.allowedOrigins = origins;
@@ -316,13 +367,15 @@ async function handler(request) {
   if (action === "share" && request.method === "POST") {
     const video = await getAuthorisedVideo(session, uid);
     const input = await requestBody(request);
-    return json({ playback: await createPlayback(video, input.expiresHours || 24) });
+    const shareId = createShareId(video, input);
+    const claim = verifyToken(shareId, shareSecret(), { issuer: "vivad-video", audience: "vivad-video-share" });
+    return json({ share: { id: shareId, watchUrl: `${applicationOrigin(request)}/?share=${encodeURIComponent(shareId)}`, expiresAt: new Date(claim.exp * 1000).toISOString() } });
   }
 
   if (action === "email" && request.method === "POST") {
     const video = await getAuthorisedVideo(session, uid);
     if (!video.readyToStream) throw Object.assign(new Error("The video is not ready to send."), { status: 409 });
-    return json({ sent: await sendVideoEmail(session, video, await requestBody(request)) });
+    return json({ sent: await sendVideoEmail(request, session, video, await requestBody(request)) });
   }
 
   throw Object.assign(new Error("Method not allowed."), { status: 405 });
