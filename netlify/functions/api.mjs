@@ -177,13 +177,14 @@ async function handler(request) {
 
   if (path === "/api/health" && request.method === "GET") {
     const provider = authenticationProvider();
-    return json({ ok: true, service: "Vivad Video", cloudflareConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN), emailConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS), authenticationConfigured: provider === "apps-script" ? Boolean(process.env.APPS_SCRIPT_AUTH_URL) : Boolean(process.env.APP_ACCESS_KEY), authenticationProvider: provider });
+    const authenticationConfigured = provider === "vivad" ? Boolean(process.env.VIVAD_AUTH_URL) : provider === "apps-script" ? Boolean(process.env.APPS_SCRIPT_AUTH_URL) : Boolean(process.env.APP_ACCESS_KEY);
+    return json({ ok: true, service: "Vivad Video", cloudflareConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN), emailConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS), authenticationConfigured, authenticationProvider: provider });
   }
 
   if (path === "/api/session/login" && request.method === "POST") {
     const input = await requestBody(request);
     const identity = await authenticateStandalone(input);
-    const session = { sub: identity.sub, name: identity.name, app: "standalone", role: "admin", mode: "standalone", authProvider: identity.provider };
+    const session = { sub: identity.sub, name: identity.name, email: identity.email || null, app: "standalone", role: "admin", mode: "standalone", authProvider: identity.provider };
     return json({ token: createSession(session), session });
   }
 

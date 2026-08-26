@@ -16,7 +16,7 @@ iRedMail SMTP credentials stored in Netlify environment variables for delivery.
 - Signed private links with 15-minute to 24-hour expiry
 - Automatic deletion for temporary videos (30 to 1,096 days)
 - Customer email through iRedMail with an inline thumbnail
-- Standalone authentication through the same Apps Script password used by SAV Builder
+- Standalone email/password authentication through the same service used by SAV Builder
 - Short-lived signed sessions for SPARK, Lotus and other host apps
 - `postMessage` lifecycle events for embedded integrations
 
@@ -52,13 +52,14 @@ Create the variables from `.env.example` in the Netlify UI. Mark all tokens,
 passwords and signing secrets as secret values. If scoped
 variables are available, include the Functions scope.
 
-Set `AUTH_PROVIDER=apps-script` and configure `APPS_SCRIPT_AUTH_URL` with the
-same deployed Apps Script Web App URL used by SAV Builder. Vivad Video sends
-the submitted password from its Netlify Function to Apps Script's `opensheet`
-validation action, never stores the password, and creates its own short-lived
-session only after Apps Script accepts it. Authentication is isolated in
-`netlify/functions/lib/auth.mjs` so a future STRAPI provider can replace Apps
-Script without changing the login interface or application session format.
+Set `AUTH_PROVIDER=vivad` and configure `VIVAD_AUTH_URL` with the same
+`/api/auth/token` endpoint used by SAV Builder. Vivad Video sends the submitted
+email address and password from its Netlify Function to that service, never
+stores the password or exposes the upstream token to the browser, and creates
+its own short-lived session only after the service accepts the credentials.
+Authentication is isolated in `netlify/functions/lib/auth.mjs` so a future
+STRAPI provider can replace the current service without changing the login
+interface or application session format.
 
 The Cloudflare API token needs only **Stream Read** and **Stream Write** for the
 correct account. Never use the Global API key.

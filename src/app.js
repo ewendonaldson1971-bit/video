@@ -135,12 +135,16 @@ function renderLogin(error = "") {
         <div class="red-rule"></div>
         <p class="eyebrow">Secure video workspace</p>
         <h1 id="login-title">Vivad Video</h1>
-        <p class="muted">Sign in with the same Vivad password used by SAV Builder.</p>
+        <p class="muted">Use the same email address and password you use for SAV Builder.</p>
         ${error ? `<div class="status-banner error" role="alert"><span>${escapeHtml(error)}</span></div>` : ""}
         <form id="login-form" style="margin-top:26px">
           <label class="field">
-            <span>Vivad password</span>
-            <input type="password" name="password" autocomplete="current-password" required autofocus>
+            <span>Email address</span>
+            <input type="email" name="email" autocomplete="username" required autofocus>
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input type="password" name="password" autocomplete="current-password" required>
           </label>
           <button class="button button-primary" type="submit" data-busy>Sign in</button>
         </form>
@@ -157,7 +161,7 @@ async function login(event) {
     const result = await fetch("/api/session/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password: form.get("password") }),
+      body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
     }).then(async (response) => {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Sign in failed.");

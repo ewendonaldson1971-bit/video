@@ -3,40 +3,37 @@ import assert from "node:assert/strict";
 import { authenticateStandalone, authenticationProvider } from "../netlify/functions/lib/auth.mjs";
 
 const env = {
-  AUTH_PROVIDER: "apps-script",
-  APPS_SCRIPT_AUTH_URL: "https://script.google.com/macros/s/example/exec",
-  APPS_SCRIPT_AUTH_MODE: "live",
-  APPS_SCRIPT_AUTH_SHEET: "Selector",
+  AUTH_PROVIDER: "vivad",
+  VIVAD_AUTH_URL: "https://auth.example.test/api/auth/token",
 };
 
-test("Apps Script authentication validates through the SAV Builder action", async () => {
-  let requestedUrl;
-  const identity = await authenticateStandalone({ password: "test-password" }, {
+test("Vivad authentication uses SAV Builder's email and password contract", async () => {
+  let request;
+  const identity = await authenticateStandalone({ email: "user@vivad.com.au", password: "test-password" }, {
     env,
-    fetchImpl: async (url) => {
-      requestedUrl = new URL(url);
-      return new Response(JSON.stringify({ ok: true, url: "https://docs.google.com/spreadsheets/example" }));
+    fetchImpl: async (url, options) => {
+      request = { url, options, body: JSON.parse(options.body) };
+      return new Response(JSON.stringify({ token: "upstream-token", user: { id: 42, username: "user@vivad.com.au" } }));
     },
   });
 
-  assert.equal(requestedUrl.searchParams.get("action"), "opensheet");
-  assert.equal(requestedUrl.searchParams.get("password"), "test-password");
-  assert.equal(requestedUrl.searchParams.get("sheet"), "Selector");
-  assert.equal(identity.provider, "apps-script");
-  assert.equal(identity.sub, "standalone");
+  assert.equal(request.url, env.VIVAD_AUTH_URL);
+  assert.deepEqual(request.body, { username: "user@vivad.com.au", password: "test-password" });
+  assert.equal(identity.provider, "vivad");
+  assert.equal(identity.sub, "42");
+  assert.equal(identity.email, "user@vivad.com.au");
 });
 
-test("Apps Script authentication rejects an incorrect password", async () => {
+test("Vivad authentication rejects incorrect credentials", async () => {
   await assert.rejects(
-    authenticateStandalone({ password: "wrong" }, {
+    authenticateStandalone({ email: "user@vivad.com.au", password: "wrong" }, {
       env,
-      fetchImpl: async () => new Response(JSON.stringify({ ok: false, error: "Incorrect password." })),
+      fetchImpl: async () => new Response(JSON.stringify({ error: "Invalid credentials" }), { status: 401 }),
     }),
-    (error) => error.status === 401 && /incorrect/i.test(error.message),
+    (error) => error.status === 401 && /email address or password/i.test(error.message),
   );
 });
 
-test("authentication provider defaults to Apps Script when its URL exists", () => {
-  assert.equal(authenticationProvider({ APPS_SCRIPT_AUTH_URL: env.APPS_SCRIPT_AUTH_URL }), "apps-script");
+test("authentication provider defaults to Vivad when its URL exists", () => {
+  assert.equal(authenticationProvider({ VIVAD_AUTH_URL: env.VIVAD_AUTH_URL }), "vivad");
 });
-

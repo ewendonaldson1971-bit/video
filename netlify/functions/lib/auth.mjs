@@ -13,11 +13,46 @@ function parsePayload(text) {
 }
 
 export function authenticationProvider(env = process.env) {
-  return String(env.AUTH_PROVIDER || (env.APPS_SCRIPT_AUTH_URL ? "apps-script" : "access-key")).trim().toLowerCase();
+  return String(env.AUTH_PROVIDER || (env.VIVAD_AUTH_URL ? "vivad" : env.APPS_SCRIPT_AUTH_URL ? "apps-script" : "access-key")).trim().toLowerCase();
 }
 
 export async function authenticateStandalone(input, { env = process.env, fetchImpl = fetch } = {}) {
   const provider = authenticationProvider(env);
+
+  if (provider === "vivad") {
+    const email = String(input?.email || input?.username || "").trim().toLowerCase();
+    const password = String(input?.password || "");
+    if (!email || !password) throw authenticationError("Enter your email address and password.");
+    if (!/^\S+@\S+\.\S+$/.test(email)) throw authenticationError("Enter a valid email address.", 400);
+    if (!env.VIVAD_AUTH_URL) throw authenticationError("Vivad authentication is not configured.", 503);
+
+    let response;
+    try {
+      response = await fetchImpl(env.VIVAD_AUTH_URL, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({ username: email, password }),
+        redirect: "follow",
+        signal: AbortSignal.timeout(12000),
+      });
+    } catch {
+      throw authenticationError("The Vivad authentication service is temporarily unavailable.", 502);
+    }
+
+    const payload = parsePayload(await response.text());
+    if (!response.ok || !payload?.token) {
+      const rejected = response.status === 400 || response.status === 401 || response.status === 403;
+      throw authenticationError(rejected ? "The email address or password is incorrect." : "The Vivad authentication service is temporarily unavailable.", rejected ? 401 : 502);
+    }
+
+    const user = payload.user || {};
+    return {
+      sub: String(user.id || user.username || user.email || email),
+      name: String(user.name || user.displayName || user.username || email),
+      email: String(user.email || email),
+      provider,
+    };
+  }
 
   if (provider === "apps-script") {
     const password = String(input?.password || "");
@@ -71,4 +106,3 @@ export async function authenticateStandalone(input, { env = process.env, fetchIm
 
   throw authenticationError(`Unsupported authentication provider: ${provider}.`, 503);
 }
-
