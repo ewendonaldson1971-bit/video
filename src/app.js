@@ -1,4 +1,5 @@
 import "./styles.css";
+import { patchTusChunk } from "./upload.js";
 
 const app = document.querySelector("#app");
 const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get("demo") === "1";
@@ -567,7 +568,17 @@ function showUploadProgress(percentage, label, error = false) {
   if (state.upload) state.upload.progress = percentage;
   const target = document.querySelector("#upload-progress");
   if (!target) return;
-  target.innerHTML = `<div class="progress-card"><div class="progress-row"><span>${escapeHtml(label)}</span><span>${Math.round(percentage)}%</span></div><div class="progress-track"><div class="progress-bar" style="width:${Math.max(0, Math.min(100, percentage))}%;${error ? "background:#e4002b" : ""}"></div></div></div>`;
+  if (!target.querySelector(".progress-card")) {
+    target.innerHTML = `<div class="progress-card"><div class="progress-row"><span data-progress-label></span><span data-progress-value></span></div><div class="progress-track" role="progressbar" aria-label="Video upload progress" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar"></div></div></div>`;
+  }
+  const value = Math.max(0, Math.min(100, Number(percentage) || 0));
+  target.querySelector("[data-progress-label]").textContent = label;
+  target.querySelector("[data-progress-value]").textContent = `${Math.round(value)}%`;
+  const track = target.querySelector(".progress-track");
+  const bar = target.querySelector(".progress-bar");
+  track.setAttribute("aria-valuenow", String(Math.round(value)));
+  bar.style.width = `${value}%`;
+  bar.style.background = error ? "#e4002b" : "";
 }
 
 async function uploadTus(file, ticket, onProgress) {
@@ -589,17 +600,13 @@ async function uploadTus(file, ticket, onProgress) {
     for (const delay of [0, 1000, 3000, 7000]) {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
       try {
-        response = await fetch(ticket.uploadURL, {
-          method: "PATCH",
-          headers: { "Tus-Resumable": "1.0.0", "Upload-Offset": String(offset), "Content-Type": "application/offset+octet-stream" },
-          body: chunk,
-        });
+        response = await patchTusChunk(ticket.uploadURL, chunk, offset, file.size, onProgress);
         if (response.ok) break;
         lastError = new Error(`Upload failed (${response.status}).`);
       } catch (error) { lastError = error; }
     }
     if (!response?.ok) throw lastError || new Error("Upload interrupted.");
-    offset = Number(response.headers.get("Upload-Offset") || next);
+    offset = Number(response.uploadOffset || next);
     onProgress((offset / file.size) * 100);
   }
   localStorage.removeItem(storageKey);
