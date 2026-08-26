@@ -1,4 +1,5 @@
-import { createSession, requireSession, safeEqual, verifyToken } from "./lib/security.mjs";
+import { authenticateStandalone, authenticationProvider } from "./lib/auth.mjs";
+import { createSession, requireSession, verifyToken } from "./lib/security.mjs";
 import { sendSmtpMessage } from "./lib/smtp.mjs";
 import {
   canAccessVideo,
@@ -175,15 +176,14 @@ async function handler(request) {
   const path = routePath(request.url);
 
   if (path === "/api/health" && request.method === "GET") {
-    return json({ ok: true, service: "Vivad Video", cloudflareConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN), emailConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) });
+    const provider = authenticationProvider();
+    return json({ ok: true, service: "Vivad Video", cloudflareConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN), emailConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS), authenticationConfigured: provider === "apps-script" ? Boolean(process.env.APPS_SCRIPT_AUTH_URL) : Boolean(process.env.APP_ACCESS_KEY), authenticationProvider: provider });
   }
 
   if (path === "/api/session/login" && request.method === "POST") {
     const input = await requestBody(request);
-    if (!process.env.APP_ACCESS_KEY || !safeEqual(input.accessKey, process.env.APP_ACCESS_KEY)) {
-      throw Object.assign(new Error("The access key is incorrect."), { status: 401 });
-    }
-    const session = { sub: "standalone", name: "Vivad user", app: "standalone", role: "admin", mode: "standalone" };
+    const identity = await authenticateStandalone(input);
+    const session = { sub: identity.sub, name: identity.name, app: "standalone", role: "admin", mode: "standalone", authProvider: identity.provider };
     return json({ token: createSession(session), session });
   }
 
