@@ -159,12 +159,21 @@ textarea { min-height: 110px; resize: vertical; }
 
 .visibility-options { display: grid; gap: 10px; }
 .visibility-option { position: relative; }
-.visibility-option input { position: absolute; opacity: 0; pointer-events: none; }
-.visibility-option label { display: grid; grid-template-columns: 38px 1fr; gap: 12px; align-items: center; border: 1px solid var(--vivad-border); border-radius: 8px; padding: 14px; cursor: pointer; }
-.visibility-option input:checked + label { border-color: var(--vivad-blue); box-shadow: 0 0 0 3px rgba(71, 143, 225, 0.13); }
-.visibility-icon { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); color: var(--vivad-charcoal); }
+.visibility-option input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.visibility-option label { min-height: 82px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 12px; align-items: center; border: 1px solid var(--vivad-border); border-radius: 8px; padding: 14px; background: #fff; cursor: pointer; transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, transform 120ms ease; }
+.visibility-option label:hover { border-color: #9ebfe6; background: rgba(71, 143, 225, 0.035); }
+.visibility-option label:active { transform: scale(0.995); }
+.visibility-option input:checked + label { border-color: var(--vivad-blue); background: rgba(71, 143, 225, 0.08); box-shadow: 0 0 0 3px rgba(71, 143, 225, 0.13); }
+.visibility-option input:focus-visible + label { outline: 3px solid rgba(71, 143, 225, 0.28); outline-offset: 3px; }
+.visibility-radio { width: 22px; height: 22px; border: 2px solid #8b8f94; border-radius: 50%; background: #fff; box-shadow: inset 0 0 0 5px #fff; transition: border-color 160ms ease, background-color 160ms ease; }
+.visibility-option input:checked + label .visibility-radio { border-color: var(--vivad-blue); background: var(--vivad-blue); }
+.visibility-copy { min-width: 0; }
 .visibility-option strong { display: block; color: var(--vivad-charcoal); }
-.visibility-option small { color: var(--vivad-muted); line-height: 1.35; }
+.visibility-option small { display: block; color: var(--vivad-muted); line-height: 1.35; margin-top: 2px; }
+.visibility-selected { display: none; border-radius: 99px; padding: 4px 8px; color: #2669b5; background: rgba(71, 143, 225, 0.13); font-size: 0.7rem; font-weight: 700; }
+.visibility-option input:checked + label .visibility-selected { display: inline-flex; }
+.access-change-status { margin: 12px 0 0; color: #2669b5; font-size: 0.78rem; font-weight: 600; }
+.button-dirty { box-shadow: 0 0 0 4px rgba(71, 143, 225, 0.16); }
 
 .progress-card { padding: 20px; margin-top: 18px; border: 1px solid var(--vivad-border); border-radius: 8px; background: #fff; }
 .progress-row { display: flex; justify-content: space-between; gap: 16px; font-weight: 700; margin-bottom: 10px; }
@@ -261,4 +270,6 @@ input[type="range"] { padding: 0; border: 0; box-shadow: none; accent-color: var
   .share-summary { grid-template-columns: 1fr; }
   .time-grid { grid-template-columns: 1fr; }
   .login-card { padding: 28px 24px; }
+  .visibility-option label { grid-template-columns: 22px minmax(0, 1fr); }
+  .visibility-selected { grid-column: 2; justify-self: start; }
 }

@@ -247,13 +247,17 @@ function visibilityOptions(current = "private", prefix = "visibility") {
   return `
     <div class="visibility-options" role="radiogroup" aria-label="Video access">
       ${[
-        ["public", "◎", "Public", "Anyone with the link can watch."],
-        ["private", "◉", "Private", "Only an expiring signed link can play."],
-        ["temporary", "◷", "Temporary", "Private and automatically deleted after its retention period."],
-      ].map(([value, icon, label, description]) => `
+        ["public", "Public", "Anyone with the link can watch."],
+        ["private", "Private", "Only an expiring signed link can play."],
+        ["temporary", "Temporary", "Private and automatically deleted after its retention period."],
+      ].map(([value, label, description]) => `
         <div class="visibility-option">
-          <input id="${prefix}-${value}" type="radio" name="${prefix}" value="${value}" ${current === value ? "checked" : ""}>
-          <label for="${prefix}-${value}"><span class="visibility-icon">${icon}</span><span><strong>${label}</strong><small>${description}</small></span></label>
+          <input id="${prefix}-${value}" type="radio" name="${prefix}" value="${value}" aria-describedby="${prefix}-${value}-description" ${current === value ? "checked" : ""}>
+          <label for="${prefix}-${value}">
+            <span class="visibility-radio" aria-hidden="true"></span>
+            <span class="visibility-copy"><strong>${label}</strong><small id="${prefix}-${value}-description">${description}</small></span>
+            <span class="visibility-selected" aria-hidden="true">Selected</span>
+          </label>
         </div>`).join("")}
     </div>`;
 }
@@ -510,6 +514,7 @@ function renderEditor() {
               <label class="field"><span>Name</span><input id="edit-name" value="${escapeHtml(video.name)}"></label>
               <span class="field-label">Access</span>
               ${visibilityOptions(video.visibility, "editVisibility")}
+              <p class="access-change-status hidden" id="access-change-status" role="status">Access changed. Save changes to apply it.</p>
               <label class="field ${video.visibility === "temporary" ? "" : "hidden"}" id="edit-retention" style="margin-top:14px"><span>Delete automatically after</span><select id="edit-temporary-days"><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
             </div>
             <div class="tool-card">
@@ -630,8 +635,24 @@ function bindEditor(duration) {
   updatePlayhead(0);
   updateTrim();
   const thumb = document.querySelector("#thumbnail-pct");
-  thumb.addEventListener("input", () => { document.querySelector("#thumbnail-time").textContent = formatTime(duration * Number(thumb.value)); });
-  document.querySelectorAll('input[name="editVisibility"]').forEach((radio) => radio.addEventListener("change", () => document.querySelector("#edit-retention").classList.toggle("hidden", radio.value !== "temporary" || !radio.checked)));
+  const markSettingsDirty = (message = "Settings changed. Save changes to apply them.") => {
+    const saveButton = document.querySelector("#save-settings");
+    const status = document.querySelector("#access-change-status");
+    saveButton.textContent = "Save changes";
+    saveButton.classList.add("button-dirty");
+    status.textContent = message;
+    status.classList.remove("hidden");
+  };
+  thumb.addEventListener("input", () => {
+    document.querySelector("#thumbnail-time").textContent = formatTime(duration * Number(thumb.value));
+    markSettingsDirty("Thumbnail changed. Save changes to apply it.");
+  });
+  document.querySelector("#edit-name").addEventListener("input", () => markSettingsDirty("Name changed. Save changes to apply it."));
+  document.querySelector("#edit-temporary-days").addEventListener("change", () => markSettingsDirty("Retention changed. Save changes to apply it."));
+  document.querySelectorAll('input[name="editVisibility"]').forEach((radio) => radio.addEventListener("change", () => {
+    document.querySelector("#edit-retention").classList.toggle("hidden", radio.value !== "temporary" || !radio.checked);
+    markSettingsDirty("Access changed. Save changes to apply it.");
+  }));
   document.querySelector("#check-status")?.addEventListener("click", () => refreshSelected());
   document.querySelector("#save-settings").addEventListener("click", saveSettings);
   document.querySelector("#create-clip").addEventListener("click", createClip);
