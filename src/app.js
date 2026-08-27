@@ -1,5 +1,5 @@
 import "./styles.css";
-import { patchTusChunk } from "./upload.js";
+import { isAbandonedUpload, patchTusChunk, ticketIsExpired, uploadStorageKey } from "./upload.js";
 
 const app = document.querySelector("#app");
 const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get("demo") === "1";
@@ -540,19 +540,26 @@ async function startUpload(event) {
   setBusy(true);
   showUploadProgress(0, "Creating a secure upload…");
   try {
-    const ticket = await api("/uploads/tus", {
-      method: "POST",
-      body: JSON.stringify({
-        fileName: form.get("name") || state.file.name,
-        fileSize: state.file.size,
-        maxDurationSeconds: Number(form.get("maxDurationSeconds")),
-        access: visibility,
-        visibility,
-        purpose: form.get("purpose"),
-        description: form.get("description"),
-        temporaryDays: Number(form.get("temporaryDays") || 30),
-      }),
-    });
+    let ticket = await resumableUploadTicket(state.file);
+    if (ticket) {
+      showUploadProgress(0, "Resuming the interrupted upload…");
+      toast("Resuming the previous upload instead of creating a duplicate.");
+    } else {
+      ticket = await api("/uploads/tus", {
+        method: "POST",
+        body: JSON.stringify({
+          fileName: form.get("name") || state.file.name,
+          fileSize: state.file.size,
+          maxDurationSeconds: Number(form.get("maxDurationSeconds")),
+          access: visibility,
+          visibility,
+          purpose: form.get("purpose"),
+          description: form.get("description"),
+          temporaryDays: Number(form.get("temporaryDays") || 30),
+        }),
+      });
+      localStorage.setItem(uploadStorageKey(state.file), JSON.stringify(ticket));
+    }
     state.upload = { uid: ticket.uid, visibility, progress: 0 };
     await uploadTus(state.file, ticket, (percentage) => showUploadProgress(percentage, percentage < 100 ? "Uploading directly to Cloudflare…" : "Upload complete. Cloudflare is processing the video…"));
     emitHostEvent("video.uploaded", { uid: ticket.uid, visibility });
@@ -563,6 +570,34 @@ async function startUpload(event) {
   } finally {
     setBusy(false);
   }
+}
+
+async function resumableUploadTicket(file) {
+  const storageKey = uploadStorageKey(file);
+  const saved = localStorage.getItem(storageKey);
+  if (!saved) return null;
+  let ticket;
+  try { ticket = JSON.parse(saved); }
+  catch { localStorage.removeItem(storageKey); return null; }
+  if (!ticket?.uid || !ticket?.uploadURL || ticketIsExpired(ticket)) {
+    localStorage.removeItem(storageKey);
+    return null;
+  }
+  let response;
+  try {
+    response = await fetch(ticket.uploadURL, { method: "HEAD", headers: { "Tus-Resumable": "1.0.0" } });
+  } catch {
+    throw new Error("The previous upload could not be checked. Check your connection and try again; no duplicate upload was created.");
+  }
+  if (!response.ok) {
+    localStorage.removeItem(storageKey);
+    return null;
+  }
+  const offset = Number(response.headers.get("Upload-Offset") || 0);
+  if (!Number.isFinite(offset) || offset < 0 || offset > file.size) {
+    throw new Error("Cloudflare returned an invalid resume position. No duplicate upload was created.");
+  }
+  return ticket;
 }
 
 function showUploadProgress(percentage, label, error = false) {
@@ -584,8 +619,7 @@ function showUploadProgress(percentage, label, error = false) {
 
 async function uploadTus(file, ticket, onProgress) {
   const chunkSize = 50 * 1024 * 1024;
-  const storageKey = `vivad-video-upload:${file.name}:${file.size}:${file.lastModified}`;
-  localStorage.setItem(storageKey, JSON.stringify(ticket));
+  const storageKey = uploadStorageKey(file);
   let offset = 0;
   try {
     const head = await fetch(ticket.uploadURL, { method: "HEAD", headers: { "Tus-Resumable": "1.0.0" } });
@@ -649,7 +683,12 @@ async function loadVideos(render = true) {
 }
 
 function renderLibrary() {
-  const cards = state.videos.map((video) => `
+  const canManageVideos = ["editor", "admin"].includes(state.session?.role);
+  const abandonedUploads = state.videos.filter(isAbandonedUpload);
+  const cards = state.videos.map((video) => {
+    const pendingUpload = String(video.status?.state || "").toLowerCase() === "pendingupload";
+    const statusLabel = video.readyToStream ? video.visibility : isAbandonedUpload(video) ? "Abandoned upload" : pendingUpload ? "Pending upload" : video.status?.state || "processing";
+    return `
     <article class="video-card ${state.selected?.uid === video.uid ? "selected" : ""}" data-video-id="${escapeHtml(video.uid)}" tabindex="0">
       <div class="video-thumb">
         ${video.thumbnail && video.visibility === "public" ? `<img src="${escapeHtml(video.thumbnail)}" alt="">` : ""}
@@ -657,19 +696,26 @@ function renderLibrary() {
       </div>
       <div class="video-card-body">
         <h3>${escapeHtml(video.name)}</h3>
-        <div class="meta-row"><span>${formatTime(video.duration)}</span><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${video.readyToStream ? video.visibility : video.status?.state || "processing"}</span></div>
+        <div class="meta-row"><span>${formatTime(video.duration)}</span><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${escapeHtml(statusLabel)}</span></div>
+        ${pendingUpload && canManageVideos ? `<button class="button button-danger button-small pending-delete" type="button" data-delete-video-id="${escapeHtml(video.uid)}" data-busy>Delete incomplete upload</button>` : ""}
       </div>
-    </article>`).join("");
+    </article>`;
+  }).join("");
   document.querySelector("#view").innerHTML = `
     <section class="panel">
-      <div class="panel-header"><div><p class="eyebrow">Step 02</p><h2>Video library</h2></div><span class="muted">${state.videos.length} video${state.videos.length === 1 ? "" : "s"}</span></div>
+      <div class="panel-header"><div><p class="eyebrow">Step 02</p><h2>Video library</h2></div><div class="library-summary"><span class="muted">${state.videos.length} video${state.videos.length === 1 ? "" : "s"}</span>${abandonedUploads.length && canManageVideos ? `<button class="button button-danger button-small" type="button" id="cleanup-abandoned" data-busy>Remove ${abandonedUploads.length} abandoned upload${abandonedUploads.length === 1 ? "" : "s"}</button>` : ""}</div></div>
       <div class="panel-body">${cards ? `<div class="video-grid">${cards}</div>` : `<div class="empty-state"><div><div class="upload-icon">□</div><h3>No videos yet</h3><p>Upload the first video to begin.</p><button class="button button-primary" data-go-upload>Upload video</button></div></div>`}</div>
     </section>`;
   document.querySelector("[data-go-upload]")?.addEventListener("click", () => navigate("upload"));
+  document.querySelector("#cleanup-abandoned")?.addEventListener("click", () => cleanupAbandonedUploads(abandonedUploads));
+  document.querySelectorAll("[data-delete-video-id]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteVideo(state.videos.find((video) => video.uid === button.dataset.deleteVideoId));
+  }));
   document.querySelectorAll("[data-video-id]").forEach((card) => {
-    const choose = () => selectVideo(card.dataset.videoId);
+    const choose = (event) => { if (!event?.target?.closest?.("[data-delete-video-id]")) selectVideo(card.dataset.videoId); };
     card.addEventListener("click", choose);
-    card.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") choose(); });
+    card.addEventListener("keydown", (event) => { if (event.target === card && (event.key === "Enter" || event.key === " ")) choose(); });
   });
 }
 
@@ -696,7 +742,10 @@ async function selectVideo(uid) {
     state.playbackRequested = true;
     emitHostEvent("video.selected", { uid });
     navigate(result.video.readyToStream ? "edit" : "library");
-    if (!result.video.readyToStream) toast("This video is still processing.");
+    if (!result.video.readyToStream) {
+      const pending = String(result.video.status?.state || "").toLowerCase() === "pendingupload";
+      toast(pending ? "This upload is incomplete. Reselect the original file to resume it, or delete the incomplete upload." : "This video is still processing.", pending ? "error" : "success");
+    }
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
 }
@@ -953,26 +1002,57 @@ function bindEditor(duration) {
   document.querySelector("#caption-file").addEventListener("change", uploadCaptionFile);
   document.querySelector("#generate-mp4").addEventListener("click", () => generateDownload("default"));
   document.querySelector("#generate-audio").addEventListener("click", () => generateDownload("audio"));
-  document.querySelector("#delete-video")?.addEventListener("click", deleteVideo);
+  document.querySelector("#delete-video")?.addEventListener("click", () => deleteVideo());
 }
 
-async function deleteVideo() {
-  const video = state.selected;
+async function requestVideoDeletion(video) {
+  return api(`/videos/${video.uid}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE", confirmUid: video.uid }) });
+}
+
+async function deleteVideo(video = state.selected) {
+  if (!video) return;
   const confirmation = window.prompt(`Permanently delete “${video.name}” from Cloudflare Stream?\n\nThis cannot be undone. Type DELETE to continue.`);
   if (confirmation === null) return;
   if (confirmation.trim() !== "DELETE") return toast("Video was not deleted. Type DELETE exactly to confirm.", "error");
   setBusy(true);
   try {
-    await api(`/videos/${video.uid}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE", confirmUid: video.uid }) });
+    await requestVideoDeletion(video);
     state.videos = state.videos.filter((item) => item.uid !== video.uid);
-    state.selected = null;
-    state.playback = null;
-    state.playbackRequested = false;
+    if (state.selected?.uid === video.uid) {
+      state.selected = null;
+      state.playback = null;
+      state.playbackRequested = false;
+    }
     emitHostEvent("video.deleted", { uid: video.uid });
     navigate("library");
     toast(`“${video.name}” was permanently deleted.`);
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
+}
+
+async function cleanupAbandonedUploads(videos) {
+  if (!videos.length) return;
+  const confirmation = window.prompt(`Permanently remove ${videos.length} expired, incomplete upload${videos.length === 1 ? "" : "s"}?\n\nThis cannot be undone. Type DELETE to continue.`);
+  if (confirmation === null) return;
+  if (confirmation.trim() !== "DELETE") return toast("No uploads were deleted. Type DELETE exactly to confirm.", "error");
+  setBusy(true);
+  const deleted = [];
+  const failed = [];
+  for (const video of videos) {
+    try { await requestVideoDeletion(video); deleted.push(video.uid); }
+    catch { failed.push(video.uid); }
+  }
+  state.videos = state.videos.filter((video) => !deleted.includes(video.uid));
+  if (deleted.includes(state.selected?.uid)) {
+    state.selected = null;
+    state.playback = null;
+    state.playbackRequested = false;
+  }
+  deleted.forEach((uid) => emitHostEvent("video.deleted", { uid }));
+  renderLibrary();
+  if (deleted.length) toast(`${deleted.length} abandoned upload${deleted.length === 1 ? "" : "s"} removed.`);
+  if (failed.length) toast(`${failed.length} upload${failed.length === 1 ? "" : "s"} could not be removed. Refresh and try again.`, "error");
+  setBusy(false);
 }
 
 async function repairPlaybackOrigin() {

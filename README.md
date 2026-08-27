@@ -121,3 +121,9 @@ administrators can delete any accessible video. The server rechecks ownership,
 requires the exact video ID plus an explicit `DELETE` confirmation, and writes a
 structured deletion entry to the Netlify function log. Temporary deletion
 continues to be scheduled through Cloudflare.
+
+Interrupted TUS uploads retain their one-time upload ticket in the browser. If
+the same local file is selected again before `uploadExpiry`, Vivad verifies the
+Cloudflare `Upload-Offset` and resumes from the confirmed byte rather than
+creating another library record. Expired `pendingupload` records are labelled
+as abandoned and can be removed individually or in a confirmed bulk cleanup.

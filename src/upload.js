@@ -21,3 +21,20 @@ export function patchTusChunk(uploadURL, chunk, offset, totalSize, onProgress, X
     request.send(chunk);
   });
 }
+
+export function uploadStorageKey(file) {
+  return `vivad-video-upload:${file.name}:${file.size}:${file.lastModified}`;
+}
+
+export function ticketIsExpired(ticket, now = Date.now()) {
+  const expiry = Date.parse(ticket?.uploadExpiry || "");
+  return Number.isFinite(expiry) && expiry <= now;
+}
+
+export function isAbandonedUpload(video, now = Date.now()) {
+  if (String(video?.status?.state || "").toLowerCase() !== "pendingupload") return false;
+  const expiry = Date.parse(video.uploadExpiry || "");
+  if (Number.isFinite(expiry)) return expiry <= now;
+  const created = Date.parse(video.created || "");
+  return Number.isFinite(created) && created <= now - 2 * 60 * 60 * 1000;
+}

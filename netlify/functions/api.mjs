@@ -389,7 +389,7 @@ async function handler(request) {
     const uploadURL = response.headers.get("location");
     const uid = response.headers.get("stream-media-id");
     if (!uploadURL || !uid) throw Object.assign(new Error("Cloudflare did not return the upload URL and video ID."), { status: 502 });
-    return json({ uploadURL, uid, visibility: privacy.visibility, scheduledDeletion: privacy.scheduledDeletion || null });
+    return json({ uploadURL, uid, uploadExpiry: metadata.expiry, visibility: privacy.visibility, scheduledDeletion: privacy.scheduledDeletion || null });
   }
 
   const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|settings|origins|captions|share|email|publishing|strapi))?$/);
@@ -404,6 +404,7 @@ async function handler(request) {
 
   if (!action && request.method === "DELETE") {
     requireEditorRole(session);
+    enforceRateLimit(request, "delete-video", { limit: 50, windowMs: 60 * 60 * 1000 });
     const video = await getAuthorisedVideo(session, uid);
     const input = await requestBody(request);
     if (input.confirmation !== "DELETE" || input.confirmUid !== uid) {

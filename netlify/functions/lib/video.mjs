@@ -76,6 +76,7 @@ export function publicVideo(video) {
     thumbnail: video.thumbnail || null,
     thumbnailTimestampPct: Number(video.thumbnailTimestampPct || 0),
     scheduledDeletion: video.scheduledDeletion || null,
+    uploadExpiry: video.uploadExpiry || null,
     creator: video.creator || null,
     clippedFrom: video.clippedFrom || null,
     allowedOrigins: Array.isArray(video.allowedOrigins) ? video.allowedOrigins : [],
