@@ -12,16 +12,18 @@ name, description, transcript, thumbnail, duration, chapters, captions, tags,
 collections, version/source relationship, review status/dates, publication
 destinations, and created/modified dates.
 
-Cloudflare Stream remains the media provider. Existing videos continue to use
-Stream metadata while the database layer is selected. `VideoRepository` is the
-durable-storage boundary; it deliberately fails when no database implementation
-exists.
+Cloudflare Stream remains the media provider and stores all video bytes.
+Netlify Database stores the small provider-independent catalogue and audit log.
+Existing Stream videos are progressively synchronised into the catalogue when
+the library is refreshed; no video content is copied into PostgreSQL.
 
 ## Production database requirement
 
-Configure and implement `VIDEO_DATABASE_URL` before enabling external YouTube or
-Vimeo records, collections, chapters, transcripts, per-user acknowledgements,
-comments, named-client activity, or audit history. PostgreSQL is recommended.
+Netlify Database supplies `NETLIFY_DB_URL` automatically in deployed functions.
+An external PostgreSQL database can be used with `VIDEO_DATABASE_URL` instead.
+The schema is versioned in `netlify/database/migrations`. Configure this storage
+before enabling external YouTube or Vimeo records, collections, chapters,
+transcripts, per-user acknowledgements, comments or named-client activity.
 Cloudflare Stream metadata should contain media-management fields, not sensitive
 customer data.
 

@@ -130,6 +130,17 @@ async function getAuthorisedVideo(session, uid) {
   return video;
 }
 
+async function catalogueBestEffort(event, operation) {
+  const repository = new VideoRepository();
+  if (!repository.configured) return null;
+  try {
+    return await operation(repository);
+  } catch (error) {
+    console.warn(JSON.stringify({ event: `video.catalogue.${event}.failed`, message: error.message }));
+    return null;
+  }
+}
+
 async function createPlayback(video, hours = 1, tokenOptions = {}) {
   const host = streamHost();
   const iframeVersion = video.modified || video.created;
@@ -297,7 +308,22 @@ async function handler(request) {
     if (session.role !== "admin") query.set("creator", creatorFor(session));
     if (url.searchParams.get("search")) query.set("search", url.searchParams.get("search").slice(0, 100));
     const videos = normaliseVideoList(await cloudflare(`/stream?${query}`));
-    return json({ videos: videos.map(publicVideo) });
+    const safeVideos = videos.map(publicVideo);
+    await catalogueBestEffort("sync", (repository) => repository.syncStreamVideos(safeVideos, session));
+    return json({ videos: safeVideos });
+  }
+
+  if (path === "/api/management" && request.method === "GET") {
+    requireEditorRole(session);
+    const repository = new VideoRepository();
+    if (!repository.configured) return json({ database: { configured: false }, catalogue: null });
+    try {
+      const ownerId = session.role === "admin" ? null : session.sub;
+      return json({ database: { configured: true }, catalogue: await repository.catalogueStatus(ownerId) });
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "video.catalogue.status.failed", message: error.message }));
+      return json({ database: { configured: true, available: false, error: "The video catalogue is temporarily unavailable." }, catalogue: null }, 503);
+    }
   }
 
   if (path === "/api/videos/external" && request.method === "POST") {
@@ -420,6 +446,14 @@ async function handler(request) {
     } catch (error) {
       console.warn(JSON.stringify({ event: "video.upload-origin-update-failed", uid, message: error.message }));
     }
+    await catalogueBestEffort("upload", (repository) => repository.recordUpload({
+      uid,
+      session: { ...session, creator: creatorFor(session) },
+      fileName,
+      visibility: privacy.visibility,
+      purpose: coreMeta.vivadPurpose,
+      uploadExpiry: metadata.expiry,
+    }));
     return json({ uploadURL, uid, uploadExpiry: metadata.expiry, visibility: privacy.visibility, scheduledDeletion: privacy.scheduledDeletion || null });
   }
 
@@ -443,6 +477,7 @@ async function handler(request) {
       throw Object.assign(new Error("Deletion confirmation did not match this video."), { status: 400 });
     }
     await cloudflare(`/stream/${uid}`, { method: "DELETE" });
+    await catalogueBestEffort("delete", (repository) => repository.markDeleted(uid, session, { name: String(video?.meta?.name || "Untitled video").slice(0, 180) }));
     console.info(JSON.stringify({
       event: "video.deleted",
       uid,
@@ -483,7 +518,9 @@ async function handler(request) {
     const origins = mergedPlaybackOrigins(source, request);
     body.allowedOrigins = origins;
     const clip = await cloudflare("/stream/clip", { method: "POST", body: JSON.stringify(body) });
-    return json({ video: publicVideo(clip) }, 201);
+    const safeClip = publicVideo(clip);
+    await catalogueBestEffort("clip", (repository) => repository.syncStreamVideos([safeClip], session));
+    return json({ video: safeClip }, 201);
   }
 
   if (action === "settings" && request.method === "POST") {
@@ -501,7 +538,9 @@ async function handler(request) {
     const origins = mergedPlaybackOrigins(video, request);
     body.allowedOrigins = origins;
     const updated = await cloudflare(`/stream/${uid}`, { method: "POST", body: JSON.stringify(body) });
-    return json({ video: publicVideo(updated) });
+    const safeUpdated = publicVideo(updated);
+    await catalogueBestEffort("settings", (repository) => repository.syncStreamVideos([safeUpdated], session));
+    return json({ video: safeUpdated });
   }
 
   if (action === "origins" && request.method === "POST") {

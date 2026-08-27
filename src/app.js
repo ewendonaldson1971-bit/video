@@ -9,6 +9,7 @@ const state = {
   session: null,
   section: "upload",
   videos: [],
+  management: null,
   selected: null,
   playback: null,
   playbackRequested: false,
@@ -130,6 +131,7 @@ async function demoApi(path, options) {
   await new Promise((resolve) => setTimeout(resolve, 250));
   if (path === "/session") return { session: state.session };
   if (path === "/videos") return { videos: [demoVideo] };
+  if (path === "/management") return { database: { configured: true }, catalogue: { counts: [{ status: "ready", count: 1 }], recentEvents: [] } };
   if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null };
   if (path.startsWith("/videos/demo-video-id") && options.method === "DELETE") return { deleted: true, uid: demoVideo.uid };
   if (path.includes("/clip")) return { video: { ...demoVideo, uid: "demo-edited-video", name: "Customer installation – edit.mp4", status: { state: "queued", pctComplete: "0" }, readyToStream: false } };
@@ -236,6 +238,7 @@ function shell() {
         <button data-section="library"><span class="step-number">02</span>Library</button>
         <button data-section="edit"><span class="step-number">03</span>Edit</button>
         <button data-section="share"><span class="step-number">04</span>Share</button>
+        ${["editor", "admin"].includes(state.session?.role) ? '<button data-section="manage"><span class="step-number">05</span>Manage</button>' : ""}
       </nav>
       <div id="view"></div>
     </main>
@@ -258,6 +261,11 @@ function navigate(section) {
   if (section === "library") renderLibrary();
   if (section === "edit") renderEditor();
   if (section === "share") renderShare();
+  if (section === "manage") {
+    if (!["editor", "admin"].includes(state.session?.role)) return navigate("library");
+    renderManagement();
+    loadManagement();
+  }
 }
 
 function visibilityOptions(current = "expiring", prefix = "visibility") {
@@ -719,6 +727,85 @@ function renderLibrary() {
   });
 }
 
+function uploadState(video) {
+  if (isAbandonedUpload(video)) return "abandoned";
+  if (video.readyToStream) return "ready";
+  const status = String(video.status?.state || "processing").toLowerCase();
+  if (status === "pendingupload") return "pending";
+  if (status === "error") return "error";
+  return "processing";
+}
+
+function managementTotals() {
+  return state.videos.reduce((totals, video) => {
+    const status = uploadState(video);
+    totals.total += 1;
+    totals[status] += 1;
+    return totals;
+  }, { total: 0, ready: 0, processing: 0, pending: 0, abandoned: 0, error: 0 });
+}
+
+async function loadManagement() {
+  try {
+    state.management = await api("/management");
+  } catch (error) {
+    state.management = { database: { configured: true, available: false, error: error.message }, catalogue: null };
+  }
+  if (state.section === "manage") renderManagement();
+}
+
+function renderManagement() {
+  const totals = managementTotals();
+  const actionable = state.videos.filter((video) => uploadState(video) !== "ready");
+  const abandoned = state.videos.filter(isAbandonedUpload);
+  const database = state.management?.database;
+  const databaseCopy = !database
+    ? "Checking catalogue…"
+    : database.configured === false
+      ? "Database not configured"
+      : database.available === false
+        ? database.error || "Catalogue unavailable"
+        : "PostgreSQL catalogue connected";
+  const rows = actionable.map((video) => {
+    const status = uploadState(video);
+    const canResume = status === "pending" || status === "abandoned";
+    return `<tr>
+      <td><strong>${escapeHtml(video.name)}</strong><small>${escapeHtml(video.uid)}</small></td>
+      <td><span class="badge badge-processing">${escapeHtml(status)}</span></td>
+      <td>${escapeHtml(video.status?.pctComplete || "0")}%</td>
+      <td>${escapeHtml(formatDate(video.created))}</td>
+      <td><div class="button-row">${canResume ? `<button class="button button-secondary button-small" type="button" data-resume-upload="${escapeHtml(video.uid)}">Resume</button>` : ""}<button class="button button-danger button-small" type="button" data-manage-delete="${escapeHtml(video.uid)}" data-busy>Delete</button></div></td>
+    </tr>`;
+  }).join("");
+  document.querySelector("#view").innerHTML = `
+    <section class="panel">
+      <div class="panel-header"><div><p class="eyebrow">Operations</p><h2>Upload management</h2></div><div class="library-summary"><span class="database-status ${database?.configured && database?.available !== false ? "connected" : ""}">${escapeHtml(databaseCopy)}</span><button class="button button-secondary button-small" id="refresh-management" type="button" data-busy>Refresh</button></div></div>
+      <div class="panel-body">
+        <div class="management-stats">
+          ${[["Total", totals.total], ["Ready", totals.ready], ["Processing", totals.processing], ["Pending", totals.pending], ["Abandoned", totals.abandoned], ["Failed", totals.error]].map(([label, value]) => `<div class="management-stat"><span>${label}</span><strong>${value}</strong></div>`).join("")}
+        </div>
+        ${abandoned.length ? `<div class="status-banner error management-alert"><span>${abandoned.length} upload${abandoned.length === 1 ? " has" : "s have"} expired without completing.</span><button class="button button-danger button-small" id="manage-cleanup-abandoned" type="button" data-busy>Remove abandoned</button></div>` : ""}
+        <div class="management-table-wrap">
+          ${rows ? `<table class="management-table"><thead><tr><th>Video</th><th>Status</th><th>Progress</th><th>Created</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="empty-state compact"><div><h3>All uploads are healthy</h3><p>No pending, abandoned or failed uploads need attention.</p></div></div>`}
+        </div>
+        <p class="expiry-note">Cloudflare Stream stores the video files. PostgreSQL stores catalogue status and audit events only.</p>
+      </div>
+    </section>`;
+  document.querySelector("#refresh-management")?.addEventListener("click", async () => {
+    setBusy(true);
+    const refreshed = await loadVideos(false);
+    if (refreshed) await loadManagement();
+    setBusy(false);
+    if (refreshed) toast("Upload statuses refreshed.");
+  });
+  document.querySelector("#manage-cleanup-abandoned")?.addEventListener("click", () => cleanupAbandonedUploads(abandoned));
+  document.querySelectorAll("[data-resume-upload]").forEach((button) => button.addEventListener("click", () => {
+    navigate("upload");
+    toast("Reselect the same original file. Vivad will resume from Cloudflare's confirmed upload position.");
+  }));
+  document.querySelectorAll("[data-manage-delete]").forEach((button) => button.addEventListener("click", () => deleteVideo(state.videos.find((video) => video.uid === button.dataset.manageDelete))));
+}
+
 function playbackAllowedOnCurrentHost(video) {
   const origins = Array.isArray(video?.allowedOrigins) ? video.allowedOrigins : [];
   if (!origins.length) return true;
@@ -1014,6 +1101,7 @@ async function deleteVideo(video = state.selected) {
   const confirmation = window.prompt(`Permanently delete “${video.name}” from Cloudflare Stream?\n\nThis cannot be undone. Type DELETE to continue.`);
   if (confirmation === null) return;
   if (confirmation.trim() !== "DELETE") return toast("Video was not deleted. Type DELETE exactly to confirm.", "error");
+  const returnSection = state.section === "manage" ? "manage" : "library";
   setBusy(true);
   try {
     await requestVideoDeletion(video);
@@ -1024,7 +1112,7 @@ async function deleteVideo(video = state.selected) {
       state.playbackRequested = false;
     }
     emitHostEvent("video.deleted", { uid: video.uid });
-    navigate("library");
+    navigate(returnSection);
     toast(`“${video.name}” was permanently deleted.`);
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
@@ -1049,7 +1137,8 @@ async function cleanupAbandonedUploads(videos) {
     state.playbackRequested = false;
   }
   deleted.forEach((uid) => emitHostEvent("video.deleted", { uid }));
-  renderLibrary();
+  if (state.section === "manage") await loadManagement();
+  else renderLibrary();
   if (deleted.length) toast(`${deleted.length} abandoned upload${deleted.length === 1 ? "" : "s"} removed.`);
   if (failed.length) toast(`${failed.length} upload${failed.length === 1 ? "" : "s"} could not be removed. Refresh and try again.`, "error");
   setBusy(false);

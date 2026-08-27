@@ -1,9 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DiscoursePublisher, RenderingService, StrapiPublisher, VideoRepository, integrationCapabilities } from "../netlify/functions/lib/adapters.mjs";
+import { DiscoursePublisher, RenderingService, StrapiPublisher, VideoRepository, integrationCapabilities, videoDatabaseConfigured } from "../netlify/functions/lib/adapters.mjs";
 
 test("optional integration capabilities remain disabled without configuration", () => {
   assert.deepEqual(integrationCapabilities({}), { database: false, strapi: false, discourse: false, rendering: false });
+});
+
+test("video catalogue recognises Netlify Database and explicit Postgres URLs", () => {
+  assert.equal(videoDatabaseConfigured({ NETLIFY_DB_URL: "postgres://netlify" }), true);
+  assert.equal(videoDatabaseConfigured({ VIDEO_DATABASE_URL: "postgres://external" }), true);
+  assert.equal(videoDatabaseConfigured({}), false);
+});
+
+test("video catalogue bulk sync stores workflow metadata without video bytes", async () => {
+  const queries = [];
+  const database = { pool: { query: async (text, values) => { queries.push({ text, values }); return { rows: [] }; } } };
+  const repository = new VideoRepository({}, database);
+  const result = await repository.syncStreamVideos([{
+    uid: "abc123",
+    name: "Safety induction",
+    purpose: "training",
+    visibility: "organisation",
+    readyToStream: false,
+    status: { state: "pendingupload" },
+    creator: "standalone:user-1",
+    core: { owner: "standalone:user-1" },
+    created: "2026-08-27T00:00:00.000Z",
+  }], { sub: "user-1" });
+  assert.deepEqual(result, { synced: 1 });
+  const stored = JSON.parse(queries[0].values[0]);
+  assert.equal(stored[0].provider_id, "abc123");
+  assert.equal(stored[0].owner_id, "user-1");
+  assert.equal(stored[0].status, "pendingupload");
+  assert.equal(stored[0].metadata.core.owner, "standalone:user-1");
+  assert.equal("video" in stored[0], false);
 });
 
 test("unconfigured adapters fail clearly rather than pretending to persist", async () => {

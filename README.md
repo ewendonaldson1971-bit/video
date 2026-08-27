@@ -103,10 +103,12 @@ event handling and framing restrictions.
 - [Strapi and video SEO](docs/strapi-seo.md)
 - [Discourse sharing](docs/discourse.md)
 
-Cloudflare Stream metadata remains the migration store for Vivad-hosted media.
-A production database is still required before enabling durable external video
-references, collections, transcripts, chapters, acknowledgements, comments,
-client activity or review history. The app does not use `localStorage` as a
+Cloudflare Stream stores the video files. Netlify Database stores a lightweight
+catalogue of provider IDs, ownership references, workflow metadata, upload state
+and audit events. The **Manage** view synchronises existing Stream records and
+shows pending, abandoned, processing and failed uploads. `VIDEO_DATABASE_URL`
+can point to another PostgreSQL provider; otherwise Netlify supplies
+`NETLIFY_DB_URL` automatically. The app does not use `localStorage` as a
 multi-user database.
 
 ## Verification

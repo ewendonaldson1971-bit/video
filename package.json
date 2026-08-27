@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "node --test"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@netlify/database": "^2.0.0"
+  },
   "devDependencies": {
     "vite": "^7.1.3"
   },
