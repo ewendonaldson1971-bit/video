@@ -43,6 +43,14 @@ test("login is denied when Lotus Directory has not assigned a Vivad Video role",
   );
 });
 
+test("roles can be returned from a nested Lotus Directory profile", async () => {
+  const identity = await authenticateStandalone({ email: "user@vivad.com.au", password: "test-password" }, {
+    env,
+    fetchImpl: async () => new Response(JSON.stringify({ token: "upstream-token", user: { id: 42, profile: { directory: { "Vivad Video Role": "Viewer" } } } })),
+  });
+  assert.equal(identity.role, "viewer");
+});
+
 test("Vivad authentication rejects incorrect credentials", async () => {
   await assert.rejects(
     authenticateStandalone({ email: "user@vivad.com.au", password: "wrong" }, {

@@ -25,16 +25,22 @@ export function normaliseVivadVideoRole(value) {
 }
 
 function vivadVideoRole(payload = {}) {
-  const user = payload.user || {};
-  const containers = [user, payload, user.permissions, payload.permissions, user.roles, payload.roles, user.directory, payload.directory]
-    .filter((value) => value && typeof value === "object" && !Array.isArray(value));
-  for (const container of containers) {
-    for (const [key, value] of Object.entries(container)) {
+  const seen = new Set();
+  const search = (value, depth = 0) => {
+    if (!value || typeof value !== "object" || depth > 8 || seen.has(value)) return null;
+    seen.add(value);
+    for (const [key, child] of Object.entries(value)) {
       const normalisedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (["vivadvideorole", "vivadvideo"].includes(normalisedKey)) return normaliseVivadVideoRole(value);
+      if (["vivadvideorole", "vivadvideo"].includes(normalisedKey)) {
+        const role = normaliseVivadVideoRole(child);
+        if (role) return role;
+      }
+      const nested = search(child, depth + 1);
+      if (nested) return nested;
     }
-  }
-  return null;
+    return null;
+  };
+  return search(payload);
 }
 
 export async function authenticateStandalone(input, { env = process.env, fetchImpl = fetch } = {}) {
