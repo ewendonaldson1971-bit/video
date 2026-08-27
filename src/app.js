@@ -18,6 +18,7 @@ const state = {
   editorCapabilities: null,
   editorDraft: null,
   playback: null,
+  playbackOrigin: null,
   playbackRequested: false,
   file: null,
   upload: null,
@@ -164,7 +165,7 @@ async function demoApi(path, options) {
   if (path.endsWith("/highlights")) return { videos: [{ ...demoVideo, uid: "demo-highlight-id", name: "Demo highlight" }] };
   if (path.endsWith("/branded")) return { video: { ...demoVideo, uid: "demo-branded-id", name: `${demoVideo.name} – branded` } };
   if (path.includes("/projects")) return { project: { id: "demo-project", recipe: JSON.parse(options.body || "{}").recipe || {} }, projects: [], capabilities: { rendering: false } };
-  if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null, permissions: { manage: demoRole !== "viewer" }, acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: null }, editorCapabilities: { database: true, rendering: false, watermark: true } };
+  if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null, permissions: { manage: demoRole !== "viewer" }, playbackOrigin: { repaired: false, repairError: null }, acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: null }, editorCapabilities: { database: true, rendering: false, watermark: true } };
   if (path.startsWith("/videos/demo-video-id") && options.method === "DELETE") return { deleted: true, uid: demoVideo.uid };
   if (path.includes("/clip")) return { video: { ...demoVideo, uid: "demo-edited-video", name: "Customer installation – edit.mp4", status: { state: "queued", pctComplete: "0" }, readyToStream: false } };
   if (path.includes("/settings")) {
@@ -699,6 +700,7 @@ async function waitUntilReady(uid) {
     const result = await api(`/videos/${uid}`);
     state.selected = result.video;
     state.playback = result.playback;
+    state.playbackOrigin = result.playbackOrigin || null;
     state.playbackRequested = true;
     const status = result.video.status;
     if (status?.state === "error") throw new Error(status.errorReasonText || "Cloudflare could not process this video.");
@@ -865,6 +867,7 @@ async function selectVideo(uid) {
     const result = await api(`/videos/${uid}`);
     state.selected = result.video;
     state.playback = result.playback;
+    state.playbackOrigin = result.playbackOrigin || null;
     state.permissions = result.permissions || { manage: ["editor", "admin"].includes(state.session?.role) };
     state.acknowledgement = result.acknowledgement || null;
     state.acknowledgementReport = null;
@@ -873,6 +876,7 @@ async function selectVideo(uid) {
     state.playbackRequested = true;
     emitHostEvent("video.selected", { uid });
     navigate(result.video.readyToStream ? "edit" : "library");
+    if (result.playbackOrigin?.repaired) toast("An old Cloudflare playback restriction was removed permanently.");
     if (!result.video.readyToStream) {
       const pending = String(result.video.status?.state || "").toLowerCase() === "pendingupload";
       toast(pending ? "This upload is incomplete. Reselect the original file to resume it, or delete the incomplete upload." : "This video is still processing.", pending ? "error" : "success");
@@ -967,6 +971,7 @@ function renderEditor() {
   const draft = ensureEditorDraft(video);
   const duration = Math.max(0.1, video.duration || 0.1);
   const playbackOriginBlocked = video.readyToStream && !playbackAllowedOnCurrentHost(video);
+  const playbackOriginRepairFailed = Boolean(state.playbackOrigin?.repairError);
   const animatedPreview = animatedThumbnailUrl(state.playback?.thumbnailUrl, duration * Number(video.thumbnailTimestampPct || 0));
   const sourceOptions = state.videos
     .filter((item) => item.readyToStream && (demoMode || /^[a-zA-Z0-9]{20,64}$/.test(item.uid)))
@@ -977,7 +982,7 @@ function renderEditor() {
       <div class="panel-header"><div><p class="eyebrow">Step 03</p><h2>Edit video</h2></div><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${video.readyToStream ? video.visibility : "processing"}</span></div>
       <div class="panel-body">
         ${video.readyToStream ? "" : `<div class="status-banner info" style="margin-bottom:20px"><span>Cloudflare is processing this video (${escapeHtml(video.status?.pctComplete || "0")}% complete).</span><button class="button button-secondary button-small" id="check-status">Check status</button></div>`}
-        ${playbackOriginBlocked ? `<div class="status-banner error" style="margin-bottom:20px" role="alert"><span>This video's playback settings still exclude ${escapeHtml(window.location.hostname)}.</span>${["editor", "admin"].includes(state.session?.role) ? `<button class="button button-secondary button-small" id="repair-playback-origin" type="button">Repair playback</button>` : `<span>Ask an editor to repair it.</span>`}</div>` : ""}
+        ${playbackOriginRepairFailed ? `<div class="status-banner error" style="margin-bottom:20px" role="alert"><span>Cloudflare rejected the permanent playback-policy update. Check that the API token has Stream Edit permission.</span><button class="button button-secondary button-small" id="repair-playback-origin" type="button">Try again</button></div>` : playbackOriginBlocked ? `<div class="status-banner error" style="margin-bottom:20px" role="alert"><span>This video's playback settings still exclude ${escapeHtml(window.location.hostname)}.</span>${["editor", "admin"].includes(state.session?.role) ? `<button class="button button-secondary button-small" id="repair-playback-origin" type="button">Repair playback</button>` : `<span>Ask an editor to repair it.</span>`}</div>` : ""}
         <div class="editor-layout">
           <div>
             ${state.playback?.iframeUrl ? `<iframe class="player-frame" id="stream-player" src="${escapeHtml(state.playback.iframeUrl)}" title="Video preview" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>` : `<div class="player-placeholder"><div><span class="loading"></span><p>${video.readyToStream ? "Preparing secure preview…" : "Preview appears when processing is complete."}</p></div></div>`}
@@ -1506,6 +1511,7 @@ async function repairPlaybackOrigin() {
   try {
     const result = await api(`/videos/${state.selected.uid}/origins`, { method: "POST" });
     state.selected = result.video;
+    state.playbackOrigin = null;
     state.playback = null;
     state.playbackRequested = false;
     toast("Playback is now allowed. Reloading the preview…");
@@ -1520,6 +1526,7 @@ async function refreshSelected(notify = true, bustPlaybackCache = false) {
     const result = await api(`/videos/${state.selected.uid}`);
     state.selected = result.video;
     state.playback = result.playback;
+    state.playbackOrigin = result.playbackOrigin || null;
     state.permissions = result.permissions || state.permissions;
     state.acknowledgement = result.acknowledgement || state.acknowledgement;
     state.editorCapabilities = result.editorCapabilities || state.editorCapabilities;
@@ -1530,7 +1537,8 @@ async function refreshSelected(notify = true, bustPlaybackCache = false) {
     }
     state.playbackRequested = true;
     renderEditor();
-    if (notify) toast(result.video.readyToStream ? "Video is ready." : "Processing status updated.");
+    if (result.playbackOrigin?.repaired) toast("An old Cloudflare playback restriction was removed permanently.");
+    else if (notify) toast(result.video.readyToStream ? "Video is ready." : "Processing status updated.");
   } catch (error) { toast(error.message, "error"); }
 }
 

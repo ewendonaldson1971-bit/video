@@ -16,7 +16,7 @@ import {
   escapeHtml,
   normaliseVideoList,
   normaliseVisibility,
-  originAllowsHostname,
+  originPoliciesMatch,
   privacyFields,
   publicVideo,
   toTusMetadata,
@@ -58,24 +58,23 @@ function applicationHostname(request) {
   return new URL(applicationOrigin(request)).hostname;
 }
 
-function mergedPlaybackOrigins(video, request) {
-  const current = Array.isArray(video?.allowedOrigins) ? video.allowedOrigins : [];
-  const configured = allowedOrigins(request);
-  if (!current.length) return configured;
-  return configuredAllowedOrigins([...current, ...configured].join(","), streamHost(), applicationHostname(request));
+function authoritativePlaybackOrigins(request) {
+  return allowedOrigins(request);
 }
 
 async function ensureApplicationPlayback(video, request) {
   const current = Array.isArray(video?.allowedOrigins) ? video.allowedOrigins : [];
-  if (!current.length || originAllowsHostname(current, applicationHostname(request))) return video;
+  const desired = authoritativePlaybackOrigins(request);
+  if (originPoliciesMatch(current, desired)) return { video, repaired: false, repairError: null };
   try {
-    return await cloudflare(`/stream/${video.uid}`, {
+    const updated = await cloudflare(`/stream/${video.uid}`, {
       method: "POST",
-      body: JSON.stringify({ uid: video.uid, allowedOrigins: mergedPlaybackOrigins(video, request) }),
+      body: JSON.stringify({ uid: video.uid, allowedOrigins: desired }),
     });
+    return { video: updated, repaired: true, repairError: null };
   } catch (error) {
     console.warn(JSON.stringify({ event: "video.playback-origin-repair-failed", uid: video.uid, message: error.message }));
-    return video;
+    return { video, repaired: false, repairError: "Cloudflare rejected the playback-origin update." };
   }
 }
 
@@ -514,14 +513,19 @@ async function handler(request) {
   if (!action && request.method === "GET") {
     let video = await getViewableVideo(session, uid);
     const mayManage = ["editor", "admin"].includes(session.role) && canAccessVideo(session, video);
-    if (mayManage) video = await ensureApplicationPlayback(video, request);
+    let playbackOrigin = { repaired: false, repairError: null };
+    if (mayManage) {
+      const originResult = await ensureApplicationPlayback(video, request);
+      video = originResult.video;
+      playbackOrigin = { repaired: originResult.repaired, repairError: originResult.repairError };
+    }
     const playback = video.readyToStream ? await createPlayback(video, 1) : null;
     const safe = publicVideo(video);
     const repository = new VideoRepository();
     const acknowledgement = repository.configured
       ? await repository.acknowledgementStatus({ uid, session, version: videoVersion(video) })
       : null;
-    return json({ video: safe, playback, permissions: { manage: mayManage }, acknowledgement: { available: repository.configured, required: safe.core.requiredAcknowledgement, version: safe.core.version, record: acknowledgement }, editorCapabilities: { ...integrationCapabilities(), watermark: Boolean(process.env.CLOUDFLARE_STREAM_WATERMARK_UID) } });
+    return json({ video: safe, playback, permissions: { manage: mayManage }, playbackOrigin, acknowledgement: { available: repository.configured, required: safe.core.requiredAcknowledgement, version: safe.core.version, record: acknowledgement }, editorCapabilities: { ...integrationCapabilities(), watermark: Boolean(process.env.CLOUDFLARE_STREAM_WATERMARK_UID) } });
   }
 
   if (!action && request.method === "DELETE") {
@@ -604,7 +608,7 @@ async function handler(request) {
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, 0.5),
     };
     if (privacy.scheduledDeletion) body.scheduledDeletion = privacy.scheduledDeletion;
-    const origins = mergedPlaybackOrigins(source, request);
+    const origins = authoritativePlaybackOrigins(request);
     body.allowedOrigins = origins;
     const clip = await cloudflare("/stream/clip", { method: "POST", body: JSON.stringify(body) });
     const safeClip = publicVideo(clip);
@@ -622,7 +626,7 @@ async function handler(request) {
     if (!highlights.length) throw Object.assign(new Error("Add at least one valid highlight range."), { status: 400 });
     const sourceVisibility = publicVideo(source).visibility;
     const privacy = privacyFields(input.visibility || sourceVisibility, input.temporaryDays);
-    const origins = mergedPlaybackOrigins(source, request);
+    const origins = authoritativePlaybackOrigins(request);
     const clips = [];
     for (const highlight of highlights) {
       const body = {
@@ -658,7 +662,7 @@ async function handler(request) {
       endTimeSeconds: source.duration,
       creator: creatorFor(session),
       requireSignedURLs: privacy.requireSignedURLs,
-      allowedOrigins: mergedPlaybackOrigins(source, request),
+      allowedOrigins: authoritativePlaybackOrigins(request),
       thumbnailTimestampPct: source.thumbnailTimestampPct || 0,
       watermark: { uid: watermarkUid },
       meta: modelMetadata({ name: input.name || `${source.meta?.name || "Video"} – branded`, access: privacy.visibility }, source.meta),
@@ -681,7 +685,7 @@ async function handler(request) {
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, video.thumbnailTimestampPct || 0),
       meta: modelMetadata({ ...input, access: privacy.visibility }, video.meta),
     };
-    const origins = mergedPlaybackOrigins(video, request);
+    const origins = authoritativePlaybackOrigins(request);
     body.allowedOrigins = origins;
     const updated = await cloudflare(`/stream/${uid}`, { method: "POST", body: JSON.stringify(body) });
     const safeUpdated = publicVideo(updated);
@@ -694,7 +698,7 @@ async function handler(request) {
     const video = await getAuthorisedVideo(session, uid);
     const updated = await cloudflare(`/stream/${uid}`, {
       method: "POST",
-      body: JSON.stringify({ uid, allowedOrigins: mergedPlaybackOrigins(video, request) }),
+      body: JSON.stringify({ uid, allowedOrigins: authoritativePlaybackOrigins(request) }),
     });
     return json({ video: publicVideo(updated) });
   }

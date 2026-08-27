@@ -44,6 +44,15 @@ export function originAllowsHostname(origins, hostname) {
   });
 }
 
+export function originPoliciesMatch(current, desired) {
+  const normalise = (values) => [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, ""))
+    .filter(Boolean))].sort();
+  const currentPolicy = normalise(current);
+  const desiredPolicy = normalise(desired);
+  return currentPolicy.length === desiredPolicy.length && currentPolicy.every((value, index) => value === desiredPolicy[index]);
+}
+
 export function privacyFields(visibility, temporaryDays = 30) {
   const mode = normaliseVisibility(visibility);
   const fields = {
