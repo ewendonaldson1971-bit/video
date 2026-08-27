@@ -24,6 +24,12 @@ acknowledgement after an editor changes the video's version. Vivad Video does
 not currently own audience assignments, so its report contains completed
 acknowledgements rather than a list of users who are still outstanding.
 
+`vivad_video_edit_projects` stores non-destructive timeline recipes, aspect
+ratio, render status and output references. It never stores video bytes.
+Cloudflare-native chapter, caption, clip, thumbnail and watermark operations
+remain in the main API. CPU-intensive composition is delegated to the rendering
+service described in `docs/rendering-service.md`.
+
 ## Production database requirement
 
 Netlify Database supplies `NETLIFY_DB_URL` automatically in deployed functions.

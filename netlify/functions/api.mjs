@@ -1,7 +1,8 @@
 import { authenticateStandalone, authenticationProvider } from "./lib/auth.mjs";
 import { createSession, requireSession, signToken, verifyToken } from "./lib/security.mjs";
 import { sendSmtpMessage } from "./lib/smtp.mjs";
-import { integrationCapabilities, StrapiPublisher, VideoRepository } from "./lib/adapters.mjs";
+import { integrationCapabilities, RenderingService, StrapiPublisher, VideoRepository } from "./lib/adapters.mjs";
+import { normaliseEditRecipe, normaliseHighlights } from "./lib/editing.mjs";
 import { modelMetadata, parseExternalVideoUrl, validateDirectMediaUrl } from "./lib/model.mjs";
 import { createPublishingBundle, discourseSharePackage } from "./lib/publishing.mjs";
 import { enforceRateLimit } from "./lib/rate-limit.mjs";
@@ -473,7 +474,40 @@ async function handler(request) {
     return json({ uploadURL, uid, uploadExpiry: metadata.expiry, visibility: privacy.visibility, scheduledDeletion: privacy.scheduledDeletion || null });
   }
 
-  const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|settings|origins|captions|share|email|publishing|strapi|acknowledgement|acknowledgements))?$/);
+  const projectMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]{20,64})\/projects(?:\/([a-zA-Z0-9-]{8,64})(?:\/(render))?)?$/);
+  if (projectMatch) {
+    requireEditorRole(session);
+    const [, projectVideoUid, projectId, projectAction] = projectMatch;
+    const source = await getAuthorisedVideo(session, projectVideoUid);
+    const repository = new VideoRepository();
+    if (!repository.configured) throw Object.assign(new Error("Edit projects require Netlify Database or VIDEO_DATABASE_URL."), { status: 503 });
+    if (!projectId && request.method === "GET") return json({ projects: await repository.listEditProjects({ uid: projectVideoUid, session }), capabilities: integrationCapabilities() });
+    if (!projectId && request.method === "POST") {
+      const input = await requestBody(request);
+      const recipe = normaliseEditRecipe(input.recipe || input, { uid: source.uid, duration: source.duration, name: source.meta?.name });
+      if (!recipe.segments.length) throw Object.assign(new Error("Add at least one clip or title card to the timeline."), { status: 400 });
+      const sourceUids = [...new Set(recipe.segments.filter((segment) => segment.type === "clip").map((segment) => segment.sourceUid))];
+      if (sourceUids.length > 20) throw Object.assign(new Error("A timeline can use up to 20 source videos."), { status: 400 });
+      for (const sourceUid of sourceUids) {
+        const timelineSource = await getAuthorisedVideo(session, sourceUid);
+        if (recipe.segments.some((segment) => segment.type === "clip" && segment.sourceUid === sourceUid && segment.end > Number(timelineSource.duration || 0))) {
+          throw Object.assign(new Error(`A timeline range exceeds the duration of ${timelineSource.meta?.name || sourceUid}.`), { status: 400 });
+        }
+      }
+      const id = /^[a-zA-Z0-9-]{8,64}$/.test(input.id || "") ? input.id : crypto.randomUUID();
+      return json({ project: await repository.saveEditProject({ id, uid: projectVideoUid, session, recipe }), capabilities: integrationCapabilities() }, 201);
+    }
+    if (projectId && !projectAction && request.method === "GET") return json({ project: await repository.editProject({ id: projectId, uid: projectVideoUid, session }), capabilities: integrationCapabilities() });
+    if (projectId && projectAction === "render" && request.method === "POST") {
+      enforceRateLimit(request, "render", { limit: 20, windowMs: 60 * 60 * 1000 });
+      const project = await repository.editProject({ id: projectId, uid: projectVideoUid, session });
+      const job = await new RenderingService().render(project);
+      return json({ project: await repository.markRenderSubmitted({ id: projectId, uid: projectVideoUid, session, job }), job }, 202);
+    }
+    throw Object.assign(new Error("Method not allowed."), { status: 405 });
+  }
+
+  const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|highlights|branded|settings|origins|captions|share|email|publishing|strapi|acknowledgement|acknowledgements))?$/);
   if (!videoMatch) throw Object.assign(new Error("Not found."), { status: 404 });
   const [, uid, action] = videoMatch;
 
@@ -487,7 +521,7 @@ async function handler(request) {
     const acknowledgement = repository.configured
       ? await repository.acknowledgementStatus({ uid, session, version: videoVersion(video) })
       : null;
-    return json({ video: safe, playback, permissions: { manage: mayManage }, acknowledgement: { available: repository.configured, required: safe.core.requiredAcknowledgement, version: safe.core.version, record: acknowledgement } });
+    return json({ video: safe, playback, permissions: { manage: mayManage }, acknowledgement: { available: repository.configured, required: safe.core.requiredAcknowledgement, version: safe.core.version, record: acknowledgement }, editorCapabilities: { ...integrationCapabilities(), watermark: Boolean(process.env.CLOUDFLARE_STREAM_WATERMARK_UID) } });
   }
 
   if (!action && request.method === "DELETE") {
@@ -578,6 +612,63 @@ async function handler(request) {
     return json({ video: safeClip }, 201);
   }
 
+  if (action === "highlights" && request.method === "POST") {
+    requireEditorRole(session);
+    enforceRateLimit(request, "highlights", { limit: 10, windowMs: 60 * 60 * 1000 });
+    const source = await getAuthorisedVideo(session, uid);
+    if (!source.readyToStream) throw Object.assign(new Error("The source video is still processing."), { status: 409 });
+    const input = await requestBody(request);
+    const highlights = normaliseHighlights(input.highlights, source.duration);
+    if (!highlights.length) throw Object.assign(new Error("Add at least one valid highlight range."), { status: 400 });
+    const sourceVisibility = publicVideo(source).visibility;
+    const privacy = privacyFields(input.visibility || sourceVisibility, input.temporaryDays);
+    const origins = mergedPlaybackOrigins(source, request);
+    const clips = [];
+    for (const highlight of highlights) {
+      const body = {
+        clippedFromVideoUID: uid,
+        startTimeSeconds: highlight.start,
+        endTimeSeconds: highlight.end,
+        creator: creatorFor(session),
+        requireSignedURLs: privacy.requireSignedURLs,
+        allowedOrigins: origins,
+        thumbnailTimestampPct: 0.5,
+        meta: modelMetadata({ name: highlight.name, access: privacy.visibility, purpose: input.purpose || source.meta?.vivadPurpose }, source.meta),
+      };
+      if (privacy.scheduledDeletion) body.scheduledDeletion = privacy.scheduledDeletion;
+      clips.push(publicVideo(await cloudflare("/stream/clip", { method: "POST", body: JSON.stringify(body) })));
+    }
+    await catalogueBestEffort("highlights", (repository) => repository.syncStreamVideos(clips, session));
+    return json({ videos: clips }, 201);
+  }
+
+  if (action === "branded" && request.method === "POST") {
+    requireEditorRole(session);
+    enforceRateLimit(request, "branded-copy", { limit: 10, windowMs: 60 * 60 * 1000 });
+    const source = await getAuthorisedVideo(session, uid);
+    if (!source.readyToStream) throw Object.assign(new Error("The source video is still processing."), { status: 409 });
+    const watermarkUid = required("CLOUDFLARE_STREAM_WATERMARK_UID");
+    if (!/^[a-zA-Z0-9]{20,64}$/.test(watermarkUid)) throw Object.assign(new Error("CLOUDFLARE_STREAM_WATERMARK_UID is invalid."), { status: 503 });
+    const input = await requestBody(request);
+    const sourceVisibility = publicVideo(source).visibility;
+    const privacy = privacyFields(input.visibility || sourceVisibility, input.temporaryDays);
+    const body = {
+      clippedFromVideoUID: uid,
+      startTimeSeconds: 0,
+      endTimeSeconds: source.duration,
+      creator: creatorFor(session),
+      requireSignedURLs: privacy.requireSignedURLs,
+      allowedOrigins: mergedPlaybackOrigins(source, request),
+      thumbnailTimestampPct: source.thumbnailTimestampPct || 0,
+      watermark: { uid: watermarkUid },
+      meta: modelMetadata({ name: input.name || `${source.meta?.name || "Video"} – branded`, access: privacy.visibility }, source.meta),
+    };
+    if (privacy.scheduledDeletion) body.scheduledDeletion = privacy.scheduledDeletion;
+    const branded = publicVideo(await cloudflare("/stream/clip", { method: "POST", body: JSON.stringify(body) }));
+    await catalogueBestEffort("branded", (repository) => repository.syncStreamVideos([branded], session));
+    return json({ video: branded }, 201);
+  }
+
   if (action === "settings" && request.method === "POST") {
     requireEditorRole(session);
     const video = await getAuthorisedVideo(session, uid);
@@ -641,7 +732,7 @@ async function handler(request) {
     const input = request.method === "POST" ? await requestBody(request) : {};
     const stableWatchUrl = safe.visibility === "public" ? publicWatchUrl : input.watchUrl;
     if (!stableWatchUrl) throw Object.assign(new Error("Create a protected share link before generating private publishing output."), { status: 400 });
-    const bundle = createPublishingBundle({ video: safe.core, watchUrl: stableWatchUrl, iframeUrl: playback.iframeUrl, thumbnailUrl: playback.thumbnailUrl, canonicalUrl: stableWatchUrl, chapters: input.chapters || [] });
+    const bundle = createPublishingBundle({ video: safe.core, watchUrl: stableWatchUrl, iframeUrl: playback.iframeUrl, thumbnailUrl: playback.thumbnailUrl, canonicalUrl: stableWatchUrl, chapters: safe.core.chapters || [] });
     const discourse = discourseSharePackage({ title: safe.name, description: safe.description, watchUrl: stableWatchUrl, iframeUrl: playback.iframeUrl, isPublic: safe.visibility === "public" });
     if (action === "strapi") {
       if (safe.visibility !== "public") throw Object.assign(new Error("Only public videos can be saved to Strapi."), { status: 400 });

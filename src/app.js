@@ -15,6 +15,8 @@ const state = {
   permissions: null,
   acknowledgement: null,
   acknowledgementReport: null,
+  editorCapabilities: null,
+  editorDraft: null,
   playback: null,
   playbackRequested: false,
   file: null,
@@ -99,6 +101,19 @@ function safeExternalUrl(value) {
   } catch { return null; }
 }
 
+function animatedThumbnailUrl(thumbnailUrl, startSeconds = 0) {
+  if (!thumbnailUrl) return "";
+  try {
+    const url = new URL(thumbnailUrl);
+    url.pathname = url.pathname.replace(/thumbnail\.jpg$/, "thumbnail.gif");
+    url.searchParams.set("time", `${Math.max(0, Number(startSeconds) || 0)}s`);
+    url.searchParams.set("height", "240");
+    url.searchParams.set("duration", "4s");
+    url.searchParams.set("fps", "8");
+    return url.toString();
+  } catch { return ""; }
+}
+
 function initials(name) {
   return String(name || "V").split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 }
@@ -146,7 +161,10 @@ async function demoApi(path, options) {
   if (path === "/management") return { database: { configured: true }, catalogue: { counts: [{ status: "ready", count: 1 }], recentEvents: [] } };
   if (path.endsWith("/acknowledgements")) return { report: { uid: demoVideo.uid, version: demoVideo.core.version, count: 0, records: [] } };
   if (path.endsWith("/acknowledgement")) return { acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: options.method === "POST" ? { acknowledged_at: new Date().toISOString() } : null } };
-  if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null, permissions: { manage: demoRole !== "viewer" }, acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: null } };
+  if (path.endsWith("/highlights")) return { videos: [{ ...demoVideo, uid: "demo-highlight-id", name: "Demo highlight" }] };
+  if (path.endsWith("/branded")) return { video: { ...demoVideo, uid: "demo-branded-id", name: `${demoVideo.name} – branded` } };
+  if (path.includes("/projects")) return { project: { id: "demo-project", recipe: JSON.parse(options.body || "{}").recipe || {} }, projects: [], capabilities: { rendering: false } };
+  if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null, permissions: { manage: demoRole !== "viewer" }, acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: null }, editorCapabilities: { database: true, rendering: false, watermark: true } };
   if (path.startsWith("/videos/demo-video-id") && options.method === "DELETE") return { deleted: true, uid: demoVideo.uid };
   if (path.includes("/clip")) return { video: { ...demoVideo, uid: "demo-edited-video", name: "Customer installation – edit.mp4", status: { state: "queued", pctComplete: "0" }, readyToStream: false } };
   if (path.includes("/settings")) {
@@ -850,6 +868,8 @@ async function selectVideo(uid) {
     state.permissions = result.permissions || { manage: ["editor", "admin"].includes(state.session?.role) };
     state.acknowledgement = result.acknowledgement || null;
     state.acknowledgementReport = null;
+    state.editorCapabilities = result.editorCapabilities || {};
+    state.editorDraft = null;
     state.playbackRequested = true;
     emitHostEvent("video.selected", { uid });
     navigate(result.video.readyToStream ? "edit" : "library");
@@ -867,6 +887,7 @@ function renderViewer() {
   const acknowledgement = state.acknowledgement || { available: false, required: false, version: video.core?.version || "1", record: null };
   const record = acknowledgement.record;
   const links = (video.core?.relatedLinks || []).map(safeExternalUrl).filter(Boolean);
+  const chapters = video.core?.chapters || [];
   const metadata = [
     ["Purpose", video.purpose], ["Version", video.core?.version || "1"], ["Owner", video.core?.contentOwner],
     ["Department", video.core?.department], ["Topic", video.core?.topic], ["Review date", video.core?.reviewDate ? formatDate(video.core.reviewDate) : ""],
@@ -880,12 +901,19 @@ function renderViewer() {
           <div class="viewer-copy"><p>${escapeHtml(video.description || "No description has been provided.")}</p></div>
         </div>
         <aside class="viewer-details">
-          <div class="tool-card"><h3>Video details</h3><dl class="metadata-list">${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>${links.length ? `<h4>Related documents</h4><ul class="related-links">${links.map((url) => `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a></li>`).join("")}</ul>` : ""}</div>
+          <div class="tool-card"><h3>Video details</h3><dl class="metadata-list">${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>${chapters.length ? `<h4>Chapters</h4><div class="chapter-links">${chapters.map((chapter) => `<button type="button" data-view-chapter="${chapter.start}"><span>${escapeHtml(chapter.title)}</span><small>${formatTimecode(chapter.start)}</small></button>`).join("")}</div>` : ""}${links.length ? `<h4>Related documents</h4><ul class="related-links">${links.map((url) => `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a></li>`).join("")}</ul>` : ""}</div>
           ${acknowledgement.required ? `<div class="tool-card acknowledgement-card ${record ? "complete" : ""}"><h3>Acknowledgement</h3>${record ? `<p><strong>Current version acknowledged.</strong></p><p class="muted">Version ${escapeHtml(acknowledgement.version)} · ${escapeHtml(new Date(record.acknowledged_at).toLocaleString("en-AU"))}</p>` : `<p>Confirm that you have read and understood this video.</p><button class="button button-primary" id="acknowledge-video" type="button" data-busy ${acknowledgement.available ? "" : "disabled"}>Acknowledge this video</button>`}</div>` : ""}
         </aside>
       </div>
     </section>`;
   document.querySelector("#acknowledge-video")?.addEventListener("click", acknowledgeSelectedVideo);
+  document.querySelectorAll("[data-view-chapter]").forEach((button) => button.addEventListener("click", () => {
+    const frame = document.querySelector(".viewer-panel .player-frame");
+    if (!frame) return;
+    const url = new URL(state.playback.iframeUrl);
+    url.searchParams.set("startTime", button.dataset.viewChapter);
+    frame.src = url.toString();
+  }));
 }
 
 async function acknowledgeSelectedVideo() {
@@ -900,12 +928,50 @@ async function acknowledgeSelectedVideo() {
   finally { setBusy(false); }
 }
 
+function editorItemId(prefix) {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+}
+
+function ensureEditorDraft(video) {
+  if (state.editorDraft) return state.editorDraft;
+  state.editorDraft = {
+    chapters: (video.core?.chapters || []).map((chapter) => ({ ...chapter })),
+    highlights: [],
+    projectId: null,
+    projectName: `${video.name} edit`,
+    aspectRatio: "original",
+    captions: "soft",
+    watermark: false,
+    background: "#000000",
+    segments: [{ id: editorItemId("clip"), type: "clip", sourceUid: video.uid, label: video.name, start: 0, end: Number(video.duration || 0), transition: "cut" }],
+  };
+  return state.editorDraft;
+}
+
+function renderChapterRows(chapters) {
+  return chapters.length ? chapters.map((chapter, index) => `<li><span><strong>${escapeHtml(chapter.title)}</strong><small>${formatTimecode(chapter.start)}</small></span><button class="button button-quiet button-small" type="button" data-remove-chapter="${index}">Remove</button></li>`).join("") : "<li>No chapters yet.</li>";
+}
+
+function renderHighlightRows(highlights) {
+  return highlights.length ? highlights.map((highlight, index) => `<li><span><strong>${escapeHtml(highlight.name)}</strong><small>${formatTimecode(highlight.start)}–${formatTimecode(highlight.end)}</small></span><button class="button button-quiet button-small" type="button" data-remove-highlight="${index}">Remove</button></li>`).join("") : "<li>No highlights selected.</li>";
+}
+
+function renderTimelineRows(segments) {
+  return segments.length ? segments.map((segment, index) => `<li class="timeline-segment"><span class="timeline-order">${index + 1}</span><span><strong>${escapeHtml(segment.type === "title" ? segment.title : segment.label)}</strong><small>${segment.type === "title" ? `Title card · ${segment.duration}s` : `${formatTimecode(segment.start)}–${formatTimecode(segment.end)} · ${escapeHtml(segment.transition)}`}</small></span><span class="button-row"><button class="button button-quiet button-small" type="button" data-move-segment="${index}" data-direction="-1" ${index ? "" : "disabled"}>↑</button><button class="button button-quiet button-small" type="button" data-move-segment="${index}" data-direction="1" ${index < segments.length - 1 ? "" : "disabled"}>↓</button><button class="button button-quiet button-small" type="button" data-remove-segment="${index}">Remove</button></span></li>`).join("") : "<li>Add at least one clip or title card.</li>";
+}
+
 function renderEditor() {
   const video = state.selected;
   if (!video) return navigate("library");
   if (!state.permissions?.manage) return renderViewer();
+  const draft = ensureEditorDraft(video);
   const duration = Math.max(0.1, video.duration || 0.1);
   const playbackOriginBlocked = video.readyToStream && !playbackAllowedOnCurrentHost(video);
+  const animatedPreview = animatedThumbnailUrl(state.playback?.thumbnailUrl, duration * Number(video.thumbnailTimestampPct || 0));
+  const sourceOptions = state.videos
+    .filter((item) => item.readyToStream && (demoMode || /^[a-zA-Z0-9]{20,64}$/.test(item.uid)))
+    .map((item) => `<option value="${escapeHtml(item.uid)}" ${item.uid === video.uid ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
+    .join("");
   document.querySelector("#view").innerHTML = `
     <section class="panel">
       <div class="panel-header"><div><p class="eyebrow">Step 03</p><h2>Edit video</h2></div><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${video.readyToStream ? video.visibility : "processing"}</span></div>
@@ -945,6 +1011,34 @@ function renderEditor() {
               <p class="timecode-help" id="timecode-help">Timecode format: HH:MM:SS.s. Use the arrow keys on either timeline handle for fine adjustments.</p>
               <button class="button button-primary" id="create-clip" data-busy ${video.readyToStream ? "" : "disabled"}>Create edited copy</button>
             </div>
+            <div class="tool-card studio-card">
+              <div class="tool-heading"><div><p class="eyebrow">Tools 01–02</p><h3>Transcript and chapters</h3></div><span class="badge badge-public">SEO + training</span></div>
+              <p class="muted">Edit WebVTT captions below under Captions and downloads. Add chapter markers here for viewers and Strapi publishing.</p>
+              <div class="grid-equal chapter-entry"><label class="field"><span>Chapter title</span><input id="chapter-title" maxlength="80" placeholder="Safety checks"></label><label class="field"><span>Start time</span><input id="chapter-start" value="00:00:00.0" inputmode="decimal"></label></div>
+              <button class="button button-secondary button-small" id="add-chapter" type="button">Add chapter</button>
+              <ul class="asset-list studio-list" id="chapter-list">${renderChapterRows(draft.chapters)}</ul>
+            </div>
+            <div class="tool-card studio-card">
+              <div class="tool-heading"><div><p class="eyebrow">Tools 03–05</p><h3>Highlights and branded previews</h3></div></div>
+              <p class="muted">Create several non-destructive clips in one operation, preview the animated email/library image, or create a full branded copy.</p>
+              <div class="grid-three"><label class="field"><span>Highlight name</span><input id="highlight-name" placeholder="Key safety point"></label><label class="field"><span>Start</span><input id="highlight-start" value="00:00:00.0" inputmode="decimal"></label><label class="field"><span>End</span><input id="highlight-end" value="${formatTimecode(duration)}" inputmode="decimal"></label></div>
+              <div class="button-row"><button class="button button-secondary button-small" id="add-highlight" type="button">Add highlight</button><button class="button button-primary button-small" id="create-highlights" type="button" data-busy ${video.readyToStream ? "" : "disabled"}>Create all highlights</button></div>
+              <ul class="asset-list studio-list" id="highlight-list">${renderHighlightRows(draft.highlights)}</ul>
+              ${animatedPreview ? `<div class="animated-preview"><img src="${escapeHtml(animatedPreview)}" alt="Animated preview"><div><strong>Animated preview</strong><p class="muted">Four seconds from the selected thumbnail frame. Private-video links expire.</p><button class="button button-quiet button-small" id="copy-animated-preview" type="button" data-url="${escapeHtml(animatedPreview)}">Copy current preview URL</button></div></div>` : ""}
+              <div class="button-row"><button class="button button-secondary" id="create-branded-copy" type="button" data-busy ${state.editorCapabilities?.watermark ? "" : "disabled"}>Create branded copy</button>${state.editorCapabilities?.watermark ? "" : '<span class="expiry-note">Add CLOUDFLARE_STREAM_WATERMARK_UID to enable branding.</span>'}</div>
+            </div>
+            <div class="tool-card studio-card timeline-card">
+              <div class="tool-heading"><div><p class="eyebrow">Tools 06–07</p><h3>Social variants and timeline</h3></div><span class="badge ${state.editorCapabilities?.rendering ? "badge-public" : "badge-processing"}">${state.editorCapabilities?.rendering ? "Renderer connected" : "Draft mode"}</span></div>
+              <p class="muted">Build a reusable multi-clip recipe. Square, vertical, title cards, transitions and burned captions are rendered by the external video-rendering service.</p>
+              <div class="grid-three"><label class="field"><span>Project name</span><input id="project-name" value="${escapeHtml(draft.projectName)}"></label><label class="field"><span>Format</span><select id="project-aspect"><option value="original" ${draft.aspectRatio === "original" ? "selected" : ""}>Original</option><option value="16:9" ${draft.aspectRatio === "16:9" ? "selected" : ""}>Landscape 16:9</option><option value="1:1" ${draft.aspectRatio === "1:1" ? "selected" : ""}>Square 1:1</option><option value="9:16" ${draft.aspectRatio === "9:16" ? "selected" : ""}>Vertical 9:16</option></select></label><label class="field"><span>Captions</span><select id="project-captions"><option value="soft" ${draft.captions === "soft" ? "selected" : ""}>Selectable</option><option value="burned" ${draft.captions === "burned" ? "selected" : ""}>Burned in</option><option value="none" ${draft.captions === "none" ? "selected" : ""}>None</option></select></label></div>
+              <div class="grid-four timeline-entry"><label class="field"><span>Source</span><select id="segment-source">${sourceOptions}</select></label><label class="field"><span>Start</span><input id="segment-start" value="00:00:00.0"></label><label class="field"><span>End</span><input id="segment-end" value="${formatTimecode(duration)}"></label><label class="field"><span>Transition</span><select id="segment-transition"><option value="cut">Cut</option><option value="crossfade">Crossfade</option></select></label></div>
+              <label class="field"><span>Clip label</span><input id="segment-label" value="${escapeHtml(video.name)}"></label>
+              <div class="button-row"><button class="button button-secondary button-small" id="add-segment" type="button">Add clip</button><label class="check-field compact-check"><input id="project-watermark" type="checkbox" ${draft.watermark ? "checked" : ""}><span>Apply watermark</span></label></div>
+              <details class="title-card-editor"><summary>Add a title card</summary><div class="grid-three"><label class="field"><span>Heading</span><input id="title-card-heading" value="${escapeHtml(video.name)}"></label><label class="field"><span>Subtitle</span><input id="title-card-subtitle" placeholder="Optional"></label><label class="field"><span>Seconds</span><input id="title-card-duration" type="number" min="1" max="30" value="3"></label></div><button class="button button-quiet button-small" id="add-title-card" type="button">Add title card</button></details>
+              <ol class="timeline-list" id="timeline-list">${renderTimelineRows(draft.segments)}</ol>
+              <div class="button-row"><button class="button button-secondary" id="save-edit-project" type="button" data-busy>Save project</button><button class="button button-quiet" id="load-edit-projects" type="button" data-busy>Load saved</button><button class="button button-primary" id="render-edit-project" type="button" data-busy ${state.editorCapabilities?.rendering ? "" : "disabled"}>Render new video</button></div>
+              <div class="expiry-note" id="rendering-note">${state.editorCapabilities?.rendering ? "The renderer will create a new file and return it to the Stream library." : "You can design and save projects now. Rendering requires RENDERING_SERVICE_URL and RENDERING_SERVICE_TOKEN."}</div>
+            </div>
           </div>
           <div class="editor-tools">
             <div class="tool-card">
@@ -981,6 +1075,7 @@ function renderEditor() {
               <div class="grid-equal"><label class="field"><span>Caption language</span><input id="caption-language" value="en" maxlength="20"></label><label class="field"><span>Upload WebVTT</span><input id="caption-file" type="file" accept=".vtt,text/vtt"></label></div>
               <div class="button-row"><button class="button button-secondary button-small" id="refresh-media" type="button">Refresh status</button><button class="button button-secondary button-small" id="generate-mp4" type="button">Generate MP4</button><button class="button button-secondary button-small" id="generate-audio" type="button">Generate audio</button></div>
               <div id="media-assets" class="media-assets"><p class="muted">Select Refresh status to list captions and downloads.</p></div>
+              <div id="caption-editor"></div>
             </div>
             <div class="button-row">
               <button class="button button-primary" id="save-settings" data-busy ${video.readyToStream ? "" : "disabled"}>Save settings</button>
@@ -1017,6 +1112,7 @@ function editorValues() {
     expiryDate: document.querySelector("#edit-expiry-date").value,
     relatedLinks: document.querySelector("#edit-related-links").value.trim(),
     requiredAcknowledgement: document.querySelector("#edit-acknowledgement").checked,
+    chapters: state.editorDraft?.chapters || [],
   };
 }
 
@@ -1148,7 +1244,10 @@ function bindEditor(duration) {
   document.querySelector("#check-status")?.addEventListener("click", () => refreshSelected());
   document.querySelector("#repair-playback-origin")?.addEventListener("click", repairPlaybackOrigin);
   document.querySelector("#save-settings").addEventListener("click", saveSettings);
-  document.querySelector("#undo-settings").addEventListener("click", renderEditor);
+  document.querySelector("#undo-settings").addEventListener("click", () => {
+    state.editorDraft = null;
+    renderEditor();
+  });
   document.querySelector("#create-clip").addEventListener("click", createClip);
   document.querySelector("#generate-captions").addEventListener("click", generateCaptions);
   document.querySelector("#refresh-media").addEventListener("click", loadMediaAssets);
@@ -1158,6 +1257,157 @@ function bindEditor(duration) {
   document.querySelector("#delete-video")?.addEventListener("click", () => deleteVideo());
   document.querySelector("#load-acknowledgements")?.addEventListener("click", loadAcknowledgementReport);
   document.querySelector("#export-acknowledgements")?.addEventListener("click", exportAcknowledgementReport);
+  document.querySelector("#add-chapter").addEventListener("click", () => addChapter(duration));
+  document.querySelector("#add-highlight").addEventListener("click", () => addHighlight(duration));
+  document.querySelector("#create-highlights").addEventListener("click", createHighlights);
+  document.querySelector("#copy-animated-preview")?.addEventListener("click", (event) => copyValue(event.currentTarget.dataset.url));
+  document.querySelector("#create-branded-copy").addEventListener("click", createBrandedCopy);
+  document.querySelector("#add-segment").addEventListener("click", addTimelineSegment);
+  document.querySelector("#add-title-card").addEventListener("click", addTimelineTitleCard);
+  document.querySelector("#save-edit-project").addEventListener("click", saveEditProject);
+  document.querySelector("#load-edit-projects").addEventListener("click", loadEditProjects);
+  document.querySelector("#render-edit-project").addEventListener("click", renderEditProject);
+  bindStudioListActions();
+}
+
+function bindStudioListActions() {
+  document.querySelectorAll("[data-remove-chapter]").forEach((button) => button.addEventListener("click", () => {
+    state.editorDraft.chapters.splice(Number(button.dataset.removeChapter), 1);
+    renderEditor();
+    toast("Chapter removed. Save settings to apply it.");
+  }));
+  document.querySelectorAll("[data-remove-highlight]").forEach((button) => button.addEventListener("click", () => {
+    state.editorDraft.highlights.splice(Number(button.dataset.removeHighlight), 1);
+    renderEditor();
+  }));
+  document.querySelectorAll("[data-remove-segment]").forEach((button) => button.addEventListener("click", () => {
+    syncProjectDraftFromForm();
+    state.editorDraft.segments.splice(Number(button.dataset.removeSegment), 1);
+    renderEditor();
+  }));
+  document.querySelectorAll("[data-move-segment]").forEach((button) => button.addEventListener("click", () => {
+    syncProjectDraftFromForm();
+    const index = Number(button.dataset.moveSegment);
+    const target = index + Number(button.dataset.direction);
+    if (target < 0 || target >= state.editorDraft.segments.length) return;
+    [state.editorDraft.segments[index], state.editorDraft.segments[target]] = [state.editorDraft.segments[target], state.editorDraft.segments[index]];
+    renderEditor();
+  }));
+}
+
+function addChapter(duration) {
+  const title = document.querySelector("#chapter-title").value.trim();
+  const start = parseTimecode(document.querySelector("#chapter-start").value);
+  if (!title) return toast("Enter a chapter title.", "error");
+  if (!Number.isFinite(start) || start < 0 || start > duration) return toast("Enter a chapter time within this video.", "error");
+  if (state.editorDraft.chapters.some((chapter) => Math.abs(chapter.start - start) < 0.05)) return toast("A chapter already starts at that time.", "error");
+  state.editorDraft.chapters.push({ title: title.slice(0, 80), start: Math.round(start * 10) / 10 });
+  state.editorDraft.chapters.sort((left, right) => left.start - right.start);
+  renderEditor();
+  toast("Chapter added. Save settings to apply it.");
+}
+
+function addHighlight(duration) {
+  const name = document.querySelector("#highlight-name").value.trim() || `Highlight ${state.editorDraft.highlights.length + 1}`;
+  const start = parseTimecode(document.querySelector("#highlight-start").value);
+  const end = parseTimecode(document.querySelector("#highlight-end").value);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > duration || end - start < 0.1) return toast("Enter a valid highlight start and end time.", "error");
+  state.editorDraft.highlights.push({ name: name.slice(0, 180), start, end });
+  renderEditor();
+}
+
+async function createHighlights() {
+  if (!state.editorDraft.highlights.length) return toast("Add at least one highlight first.", "error");
+  setBusy(true);
+  try {
+    const result = await api(`/videos/${state.selected.uid}/highlights`, { method: "POST", body: JSON.stringify({ highlights: state.editorDraft.highlights, visibility: state.selected.visibility, purpose: state.selected.purpose }) });
+    await loadVideos(false);
+    state.editorDraft.highlights = [];
+    renderEditor();
+    toast(`${result.videos.length} highlight${result.videos.length === 1 ? "" : "s"} created and queued for processing.`);
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function createBrandedCopy() {
+  setBusy(true);
+  try {
+    const result = await api(`/videos/${state.selected.uid}/branded`, { method: "POST", body: JSON.stringify({ visibility: state.selected.visibility }) });
+    await loadVideos(false);
+    toast(`Branded copy “${result.video.name}” is processing.`);
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+function syncProjectDraftFromForm() {
+  if (!state.editorDraft) return;
+  state.editorDraft.projectName = document.querySelector("#project-name")?.value.trim() || state.editorDraft.projectName;
+  state.editorDraft.aspectRatio = document.querySelector("#project-aspect")?.value || state.editorDraft.aspectRatio;
+  state.editorDraft.captions = document.querySelector("#project-captions")?.value || state.editorDraft.captions;
+  state.editorDraft.watermark = Boolean(document.querySelector("#project-watermark")?.checked);
+}
+
+function addTimelineSegment() {
+  syncProjectDraftFromForm();
+  const sourceUid = document.querySelector("#segment-source").value;
+  const start = parseTimecode(document.querySelector("#segment-start").value);
+  const end = parseTimecode(document.querySelector("#segment-end").value);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < 0.1) return toast("Enter a valid timeline clip range.", "error");
+  state.editorDraft.segments.push({ id: editorItemId("clip"), type: "clip", sourceUid, start, end, label: document.querySelector("#segment-label").value.trim() || "Timeline clip", transition: document.querySelector("#segment-transition").value });
+  renderEditor();
+}
+
+function addTimelineTitleCard() {
+  syncProjectDraftFromForm();
+  const title = document.querySelector("#title-card-heading").value.trim();
+  const subtitle = document.querySelector("#title-card-subtitle").value.trim();
+  const duration = Number(document.querySelector("#title-card-duration").value);
+  if (!title) return toast("Enter a title-card heading.", "error");
+  if (!Number.isFinite(duration) || duration < 1 || duration > 30) return toast("Title cards must be between 1 and 30 seconds.", "error");
+  state.editorDraft.segments.push({ id: editorItemId("title"), type: "title", title, subtitle, duration });
+  renderEditor();
+}
+
+function editRecipe() {
+  syncProjectDraftFromForm();
+  return { name: state.editorDraft.projectName, aspectRatio: state.editorDraft.aspectRatio, captions: state.editorDraft.captions, watermark: state.editorDraft.watermark, background: state.editorDraft.background, segments: state.editorDraft.segments };
+}
+
+async function saveEditProject(notify = true) {
+  const result = await api(`/videos/${state.selected.uid}/projects`, { method: "POST", body: JSON.stringify({ id: state.editorDraft.projectId, recipe: editRecipe() }) });
+  state.editorDraft.projectId = result.project.id;
+  state.editorCapabilities = { ...state.editorCapabilities, ...result.capabilities };
+  if (notify) toast("Edit project saved.");
+  return result.project;
+}
+
+async function loadEditProjects() {
+  setBusy(true);
+  try {
+    const result = await api(`/videos/${state.selected.uid}/projects`);
+    if (!result.projects.length) return toast("No saved projects for this video yet.");
+    const target = document.querySelector("#rendering-note");
+    target.innerHTML = `<strong>Saved projects</strong><div class="saved-projects">${result.projects.map((project) => `<button type="button" data-load-project="${escapeHtml(project.id)}"><span>${escapeHtml(project.name)}</span><small>${escapeHtml(project.aspect_ratio)} · ${escapeHtml(project.status)}</small></button>`).join("")}</div>`;
+    document.querySelectorAll("[data-load-project]").forEach((button) => button.addEventListener("click", () => {
+      const project = result.projects.find((item) => item.id === button.dataset.loadProject);
+      if (!project) return;
+      const recipe = project.recipe || {};
+      state.editorDraft = { ...state.editorDraft, ...recipe, projectId: project.id, projectName: recipe.name || project.name, segments: recipe.segments || [] };
+      renderEditor();
+      toast("Edit project loaded.");
+    }));
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function renderEditProject() {
+  setBusy(true);
+  try {
+    await saveEditProject(false);
+    const result = await api(`/videos/${state.selected.uid}/projects/${state.editorDraft.projectId}/render`, { method: "POST", body: JSON.stringify({}) });
+    toast(`Rendering job ${result.job.id || "submitted"} is ${result.job.status}.`);
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
 }
 
 function renderAcknowledgementReport() {
@@ -1272,6 +1522,7 @@ async function refreshSelected(notify = true, bustPlaybackCache = false) {
     state.playback = result.playback;
     state.permissions = result.permissions || state.permissions;
     state.acknowledgement = result.acknowledgement || state.acknowledgement;
+    state.editorCapabilities = result.editorCapabilities || state.editorCapabilities;
     if (bustPlaybackCache && state.playback?.iframeUrl) {
       const iframeUrl = new URL(state.playback.iframeUrl);
       iframeUrl.searchParams.set("vivadRefresh", String(Date.now()));
@@ -1340,7 +1591,7 @@ async function loadMediaAssets() {
   try {
     const [captionResult, downloadResult] = await Promise.all([api(`/videos/${state.selected.uid}/captions`), api(`/videos/${state.selected.uid}/downloads`)]);
     const captions = Array.isArray(captionResult.captions) ? captionResult.captions : [];
-    const captionRows = captions.map((caption) => `<li><span><strong>${escapeHtml(caption.label || caption.language)}</strong> · ${escapeHtml(caption.status || "unknown")}${caption.generated ? " · AI generated" : ""}</span><span class="button-row">${caption.status === "ready" ? `<a class="button button-quiet button-small" href="/api/videos/${state.selected.uid}/captions/${encodeURIComponent(caption.language)}/vtt" target="_blank">Download</a>` : ""}<button class="button button-quiet button-small" type="button" data-delete-caption="${escapeHtml(caption.language)}">Delete</button></span></li>`).join("");
+    const captionRows = captions.map((caption) => `<li><span><strong>${escapeHtml(caption.label || caption.language)}</strong> · ${escapeHtml(caption.status || "unknown")}${caption.generated ? " · AI generated" : ""}</span><span class="button-row">${caption.status === "ready" ? `<button class="button button-quiet button-small" type="button" data-edit-caption="${escapeHtml(caption.language)}">Edit</button><button class="button button-quiet button-small" type="button" data-download-caption="${escapeHtml(caption.language)}">Download</button>` : ""}<button class="button button-quiet button-small" type="button" data-delete-caption="${escapeHtml(caption.language)}">Delete</button></span></li>`).join("");
     const downloads = downloadResult.downloads || {};
     const downloadRows = [["default", "MP4 video"], ["audio", "M4A audio"]].map(([type, label]) => {
       const item = downloads[type];
@@ -1348,8 +1599,57 @@ async function loadMediaAssets() {
     }).join("");
     document.querySelector("#media-assets").innerHTML = `<h4>Captions</h4><ul class="asset-list">${captionRows || "<li>No captions yet.</li>"}</ul><h4>Downloads</h4><ul class="asset-list">${downloadRows}</ul>`;
     document.querySelectorAll("[data-delete-caption]").forEach((button) => button.addEventListener("click", () => deleteCaption(button.dataset.deleteCaption)));
+    document.querySelectorAll("[data-edit-caption]").forEach((button) => button.addEventListener("click", () => editCaption(button.dataset.editCaption)));
+    document.querySelectorAll("[data-download-caption]").forEach((button) => button.addEventListener("click", () => downloadCaption(button.dataset.downloadCaption)));
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
+}
+
+async function captionText(language) {
+  const response = await fetch(`/api/videos/${encodeURIComponent(state.selected.uid)}/captions/${encodeURIComponent(language)}/vtt`, { headers: { authorization: `Bearer ${state.token}` } });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || "Unable to load captions.");
+  }
+  return response.text();
+}
+
+async function editCaption(language) {
+  setBusy(true);
+  try {
+    const vtt = await captionText(language);
+    const target = document.querySelector("#caption-editor");
+    target.innerHTML = `<div class="caption-editor-panel"><div class="tool-heading"><h4>Edit ${escapeHtml(language)} captions</h4><button class="button button-quiet button-small" id="close-caption-editor" type="button">Close</button></div><p class="muted">Keep the WEBVTT header and timestamp lines. Saving replaces this language track.</p><textarea id="caption-editor-text" spellcheck="true">${escapeHtml(vtt)}</textarea><button class="button button-primary button-small" id="save-caption-editor" type="button" data-busy>Save captions</button></div>`;
+    document.querySelector("#close-caption-editor").addEventListener("click", () => { target.innerHTML = ""; });
+    document.querySelector("#save-caption-editor").addEventListener("click", () => saveCaptionEdits(language));
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function saveCaptionEdits(language) {
+  const vtt = document.querySelector("#caption-editor-text").value;
+  if (!vtt.startsWith("WEBVTT")) return toast("Captions must start with WEBVTT.", "error");
+  setBusy(true);
+  try {
+    await api(`/videos/${state.selected.uid}/captions/${language}`, { method: "PUT", body: JSON.stringify({ vtt }) });
+    toast(`${language} captions saved.`);
+    await loadMediaAssets();
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function downloadCaption(language) {
+  try {
+    const vtt = await captionText(language);
+    const url = URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `captions-${language}.vtt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (error) { toast(error.message, "error"); }
 }
 
 async function uploadCaptionFile(event) {

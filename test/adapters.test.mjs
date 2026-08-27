@@ -58,6 +58,19 @@ test("unconfigured adapters fail clearly rather than pretending to persist", asy
   await assert.rejects(() => new RenderingService({}).render({}), /not configured/);
 });
 
+test("rendering adapter submits a non-secret edit recipe", async () => {
+  let request;
+  const service = new RenderingService({ RENDERING_SERVICE_URL: "https://render.example", RENDERING_SERVICE_TOKEN: "secret" }, async (url, options) => {
+    request = { url, options };
+    return new Response(JSON.stringify({ jobId: "job-1", status: "queued" }), { status: 202, headers: { "content-type": "application/json" } });
+  });
+  const result = await service.render({ id: "project-1", video_uid: "video-1", recipe: { aspectRatio: "9:16", segments: [] } });
+  assert.equal(result.id, "job-1");
+  assert.equal(request.url, "https://render.example/jobs");
+  assert.equal(JSON.parse(request.options.body).recipe.aspectRatio, "9:16");
+  assert.equal(request.options.body.includes("secret"), false);
+});
+
 test("Strapi adapter explicitly creates drafts", async () => {
   let request;
   const fetchImpl = async (url, options) => {

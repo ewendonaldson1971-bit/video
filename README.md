@@ -28,6 +28,12 @@ iRedMail SMTP credentials stored in Netlify environment variables for delivery.
 - Viewer-only watch workflow for organisation and public videos
 - Version-specific training/SOP acknowledgement records with editor CSV export
 - Installable web-app metadata and Vivad Video icons for desktop taskbars
+- Inline WebVTT caption correction and authenticated caption downloads
+- Chapter markers used by the viewer and Strapi publishing bundle
+- Batch highlight extraction and animated thumbnail previews
+- Full-length branded copies using a configured Cloudflare watermark profile
+- Persistent non-destructive edit projects for landscape, square and vertical output
+- Reorderable multi-video timelines with title cards, transitions and caption modes
 
 ## Access modes
 
@@ -87,6 +93,10 @@ interface or application session format.
 The Cloudflare API token needs only **Stream Read** and **Stream Write** for the
 correct account. Never use the Global API key.
 
+To enable **Create branded copy**, create a Cloudflare Stream watermark profile
+and set its UID as `CLOUDFLARE_STREAM_WATERMARK_UID`. Watermarks are applied to
+new copies; originals are never modified.
+
 For iRedMail, use authenticated submission on port `587` with STARTTLS. Set
 `SMTP_FROM_EMAIL` to the same address as `SMTP_USER` unless iRedMail has been
 explicitly configured to permit sender aliases.
@@ -114,6 +124,7 @@ event handling and framing restrictions.
 - [Architecture and persistence](docs/architecture.md)
 - [Strapi and video SEO](docs/strapi-seo.md)
 - [Discourse sharing](docs/discourse.md)
+- [Advanced rendering service contract](docs/rendering-service.md)
 
 Cloudflare Stream stores the video files. Netlify Database stores a lightweight
 catalogue of provider IDs, ownership references, workflow metadata, upload state
@@ -122,6 +133,13 @@ shows pending, abandoned, processing and failed uploads. `VIDEO_DATABASE_URL`
 can point to another PostgreSQL provider; otherwise Netlify supplies
 `NETLIFY_DB_URL` automatically. The app does not use `localStorage` as a
 multi-user database.
+
+Edit projects and their JSON recipes are stored in Netlify Database. Caption
+editing, chapters, highlights, animated previews and branded copies use
+Cloudflare Stream directly. Square/vertical variants and multi-clip renders are
+submitted to the optional rendering service configured with
+`RENDERING_SERVICE_URL` and `RENDERING_SERVICE_TOKEN`; projects can still be
+designed and saved when that service is unavailable.
 
 Videos marked **Require acknowledgement** show an acknowledgement action to
 viewers. Editors and administrators who can manage the video can load the

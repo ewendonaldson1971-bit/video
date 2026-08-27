@@ -29,11 +29,12 @@ test("legacy private metadata migrates to expiring access", () => {
 });
 
 test("model metadata preserves existing values and sanitises lengths", () => {
-  const meta = modelMetadata({ name: "New", purpose: "sop", access: "team", tags: ["safety", "training"] }, { custom: "keep" });
+  const meta = modelMetadata({ name: "New", purpose: "sop", access: "team", tags: ["safety", "training"], chapters: [{ title: "Prepare", start: 0 }, { title: "Install", start: 30 }] }, { custom: "keep" });
   assert.equal(meta.custom, "keep");
   assert.equal(meta.vivadPurpose, "sop");
   assert.equal(meta.vivadAccess, "team");
   assert.equal(meta.vivadTags, "safety,training");
+  assert.deepEqual(toCoreVideo({ uid: "abc", duration: 60, meta }).chapters, [{ title: "Prepare", start: 0 }, { title: "Install", start: 30 }]);
 });
 
 test("external URLs accept official providers without downloading content", () => {

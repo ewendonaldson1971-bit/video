@@ -1,3 +1,5 @@
+import { normaliseChapters, parseStoredChapters } from "./editing.mjs";
+
 const PURPOSES = new Set(["website", "training", "sop", "internal", "client", "general"]);
 const ACCESS_POLICIES = new Set(["public", "link", "organisation", "team", "client", "expiring", "temporary"]);
 
@@ -54,6 +56,7 @@ export function modelMetadata(input = {}, previous = {}) {
     vivadExpiryDate: text(input.expiryDate ?? previous.vivadExpiryDate, 10),
     vivadRelatedLinks: text(input.relatedLinks ?? previous.vivadRelatedLinks, 1000),
     vivadRequiredAcknowledgement: String(Boolean(input.requiredAcknowledgement ?? (previous.vivadRequiredAcknowledgement === "true"))),
+    vivadChapters: text(JSON.stringify(normaliseChapters(input.chapters ?? parseStoredChapters(previous.vivadChapters))), 4000),
   };
 }
 
@@ -118,7 +121,7 @@ export function toCoreVideo(video = {}) {
     transcript: "",
     thumbnail: video.thumbnail || null,
     duration: Number(video.duration || 0),
-    chapters: [],
+    chapters: parseStoredChapters(meta.vivadChapters, Number(video.duration || 0)),
     captionLanguages: [],
     tags: String(meta.vivadTags || "").split(",").map((item) => item.trim()).filter(Boolean),
     collections: [],

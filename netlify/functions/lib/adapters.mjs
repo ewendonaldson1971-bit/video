@@ -152,6 +152,62 @@ export class VideoRepository {
     return rows;
   }
 
+  async saveEditProject({ id, uid, session, recipe }) {
+    const { rows } = await this.client().pool.query(`
+      INSERT INTO vivad_video_edit_projects (id, video_uid, owner_id, name, aspect_ratio, recipe)
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        aspect_ratio = EXCLUDED.aspect_ratio,
+        recipe = EXCLUDED.recipe,
+        status = 'draft',
+        render_job_id = NULL,
+        output_video_uid = NULL,
+        error_message = NULL,
+        updated_at = NOW()
+      WHERE vivad_video_edit_projects.owner_id = EXCLUDED.owner_id
+        AND vivad_video_edit_projects.video_uid = EXCLUDED.video_uid
+      RETURNING *
+    `, [String(id), String(uid), String(session.sub), String(recipe.name), String(recipe.aspectRatio), JSON.stringify(recipe)]);
+    if (!rows[0]) throw Object.assign(new Error("You do not have access to this edit project."), { status: 403 });
+    await this.recordEvent({ uid, eventType: "edit.project.saved", session, details: { projectId: String(id), aspectRatio: recipe.aspectRatio } });
+    return rows[0];
+  }
+
+  async listEditProjects({ uid, session }) {
+    const parameters = session.role === "admin" ? [String(uid)] : [String(uid), String(session.sub)];
+    const { rows } = await this.client().pool.query(`
+      SELECT id, video_uid, owner_id, name, aspect_ratio, recipe, status, render_job_id, output_video_uid, error_message, created_at, updated_at
+      FROM vivad_video_edit_projects
+      WHERE video_uid = $1 ${session.role === "admin" ? "" : "AND owner_id = $2"}
+      ORDER BY updated_at DESC
+      LIMIT 50
+    `, parameters);
+    return rows;
+  }
+
+  async editProject({ id, uid, session }) {
+    const parameters = session.role === "admin" ? [String(id), String(uid)] : [String(id), String(uid), String(session.sub)];
+    const { rows } = await this.client().pool.query(`
+      SELECT * FROM vivad_video_edit_projects
+      WHERE id = $1 AND video_uid = $2 ${session.role === "admin" ? "" : "AND owner_id = $3"}
+      LIMIT 1
+    `, parameters);
+    if (!rows[0]) throw Object.assign(new Error("Edit project not found."), { status: 404 });
+    return rows[0];
+  }
+
+  async markRenderSubmitted({ id, uid, session, job }) {
+    const { rows } = await this.client().pool.query(`
+      UPDATE vivad_video_edit_projects
+      SET status = $1, render_job_id = $2, output_video_uid = $3, error_message = NULL, updated_at = NOW()
+      WHERE id = $4 AND video_uid = $5
+      RETURNING *
+    `, [String(job.status || "queued"), job.id ? String(job.id) : null, job.outputVideoUid ? String(job.outputVideoUid) : null, String(id), String(uid)]);
+    await this.recordEvent({ uid, eventType: "edit.render.submitted", session, details: { projectId: String(id), jobId: job.id || null } });
+    return rows[0];
+  }
+
   async catalogueStatus(ownerId = null) {
     const parameters = ownerId ? [String(ownerId)] : [];
     const ownerClause = ownerId ? "AND owner_id = $1" : "";
@@ -191,6 +247,16 @@ export class DiscoursePublisher {
 }
 
 export class RenderingService {
-  constructor(env = process.env) { this.configured = Boolean(env.RENDERING_SERVICE_URL && env.RENDERING_SERVICE_TOKEN); }
-  async render() { if (!this.configured) throw Object.assign(new Error("Advanced rendering is not configured."), { status: 503 }); }
+  constructor(env = process.env, fetchImpl = fetch) { this.env = env; this.fetch = fetchImpl; this.configured = Boolean(env.RENDERING_SERVICE_URL && env.RENDERING_SERVICE_TOKEN); }
+  async render(project) {
+    if (!this.configured) throw Object.assign(new Error("Advanced rendering is not configured. Set RENDERING_SERVICE_URL and RENDERING_SERVICE_TOKEN."), { status: 503 });
+    const response = await this.fetch(`${String(this.env.RENDERING_SERVICE_URL).replace(/\/$/, "")}/jobs`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.env.RENDERING_SERVICE_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ projectId: project.id, videoUid: project.video_uid, recipe: project.recipe }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(payload.error || `Rendering service request failed (${response.status}).`), { status: 502 });
+    return { id: payload.id || payload.jobId || null, status: payload.status || "queued", outputVideoUid: payload.outputVideoUid || null };
+  }
 }
