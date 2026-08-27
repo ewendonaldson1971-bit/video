@@ -16,6 +16,27 @@ export function authenticationProvider(env = process.env) {
   return String(env.AUTH_PROVIDER || (env.VIVAD_AUTH_URL ? "vivad" : env.APPS_SCRIPT_AUTH_URL ? "apps-script" : "access-key")).trim().toLowerCase();
 }
 
+export function normaliseVivadVideoRole(value) {
+  const role = String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  if (["admin", "administrator"].includes(role)) return "admin";
+  if (role === "editor") return "editor";
+  if (["viewer", "view only", "read only", "readonly"].includes(role)) return "viewer";
+  return null;
+}
+
+function vivadVideoRole(payload = {}) {
+  const user = payload.user || {};
+  const containers = [user, payload, user.permissions, payload.permissions, user.roles, payload.roles, user.directory, payload.directory]
+    .filter((value) => value && typeof value === "object" && !Array.isArray(value));
+  for (const container of containers) {
+    for (const [key, value] of Object.entries(container)) {
+      const normalisedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (["vivadvideorole", "vivadvideo"].includes(normalisedKey)) return normaliseVivadVideoRole(value);
+    }
+  }
+  return null;
+}
+
 export async function authenticateStandalone(input, { env = process.env, fetchImpl = fetch } = {}) {
   const provider = authenticationProvider(env);
 
@@ -46,10 +67,13 @@ export async function authenticateStandalone(input, { env = process.env, fetchIm
     }
 
     const user = payload.user || {};
+    const role = vivadVideoRole(payload);
+    if (!role) throw authenticationError("Your Lotus Directory record does not grant access to Vivad Video. Ask an administrator to set Vivad Video Role to Viewer, Editor or Admin.", 403);
     return {
       sub: String(user.id || user.username || user.email || email),
       name: String(user.name || user.displayName || user.username || email),
       email: String(user.email || email),
+      role,
       provider,
     };
   }

@@ -68,6 +68,10 @@ Set `AUTH_PROVIDER=vivad` and configure `VIVAD_AUTH_URL` with the same
 email address and password from its Netlify Function to that service, never
 stores the password or exposes the upstream token to the browser, and creates
 its own short-lived session only after the service accepts the credentials.
+The service must also return the Lotus Directory field `Vivad Video Role` as
+`Admin`, `Editor` or `Viewer` (case-insensitive). Vivad Video also accepts the
+JSON aliases `vivadVideoRole` and `vivad_video_role`. Blank, `No Access` and
+unknown values are denied; authenticated users are never promoted implicitly.
 Authentication is isolated in `netlify/functions/lib/auth.mjs` so a future
 STRAPI provider can replace the current service without changing the login
 interface or application session format.

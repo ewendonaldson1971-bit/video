@@ -274,7 +274,7 @@ async function handler(request) {
     enforceRateLimit(request, "login", { limit: 10, windowMs: 15 * 60 * 1000 });
     const input = await requestBody(request);
     const identity = await authenticateStandalone(input);
-    const session = { sub: identity.sub, name: identity.name, email: identity.email || null, app: "standalone", role: "admin", mode: "standalone", authProvider: identity.provider };
+    const session = { sub: identity.sub, name: identity.name, email: identity.email || null, app: "standalone", role: identity.role, mode: "standalone", authProvider: identity.provider };
     return json({ token: createSession(session), session });
   }
 
