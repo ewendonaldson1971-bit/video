@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canAccessVideo, configuredAllowedOrigins, creatorFor, normaliseVideoList, normaliseVisibility, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
+import { canAccessVideo, configuredAllowedOrigins, creatorFor, normaliseVideoList, normaliseVisibility, originAllowsHostname, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
 
 test("visibility defaults to expiring protected playback", () => {
   assert.equal(normaliseVisibility("unknown"), "expiring");
@@ -24,6 +24,14 @@ test("restricted origins always include the Vivad Video application host", () =>
     configuredAllowedOrigins("videos.vivad.com.au", "customer-example.cloudflarestream.com", "vivad-video.netlify.app"),
     ["videos.vivad.com.au", "vivad-video.netlify.app", "customer-example.cloudflarestream.com"],
   );
+});
+
+test("origin restrictions recognise exact hosts and Cloudflare wildcard semantics", () => {
+  assert.equal(originAllowsHostname([], "vivad-video.netlify.app"), true);
+  assert.equal(originAllowsHostname(["vivad-video.netlify.app"], "vivad-video.netlify.app"), true);
+  assert.equal(originAllowsHostname(["*.vivad.com.au"], "spark.vivad.com.au"), true);
+  assert.equal(originAllowsHostname(["*.vivad.com.au"], "vivad.com.au"), false);
+  assert.equal(originAllowsHostname(["old.example"], "vivad-video.netlify.app"), false);
 });
 
 test("temporary videos are private and scheduled at least 30 days away", () => {

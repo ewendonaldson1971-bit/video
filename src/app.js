@@ -727,7 +727,7 @@ function playbackAllowedOnCurrentHost(video) {
     const allowed = String(origin || "").trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
     if (allowed.startsWith("*.")) {
       const root = allowed.slice(2);
-      return hostname === root || hostname.endsWith(`.${root}`);
+      return hostname !== root && hostname.endsWith(`.${root}`);
     }
     return hostname === allowed;
   });
@@ -760,7 +760,7 @@ function renderEditor() {
       <div class="panel-header"><div><p class="eyebrow">Step 03</p><h2>Edit video</h2></div><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${video.readyToStream ? video.visibility : "processing"}</span></div>
       <div class="panel-body">
         ${video.readyToStream ? "" : `<div class="status-banner info" style="margin-bottom:20px"><span>Cloudflare is processing this video (${escapeHtml(video.status?.pctComplete || "0")}% complete).</span><button class="button button-secondary button-small" id="check-status">Check status</button></div>`}
-        ${playbackOriginBlocked ? `<div class="status-banner error" style="margin-bottom:20px" role="alert"><span>This older video does not allow playback on ${escapeHtml(window.location.hostname)}.</span><button class="button button-secondary button-small" id="repair-playback-origin" type="button">Allow playback here</button></div>` : ""}
+        ${playbackOriginBlocked ? `<div class="status-banner error" style="margin-bottom:20px" role="alert"><span>This video's playback settings still exclude ${escapeHtml(window.location.hostname)}.</span>${["editor", "admin"].includes(state.session?.role) ? `<button class="button button-secondary button-small" id="repair-playback-origin" type="button">Repair playback</button>` : `<span>Ask an editor to repair it.</span>`}</div>` : ""}
         <div class="editor-layout">
           <div>
             ${state.playback?.iframeUrl ? `<iframe class="player-frame" id="stream-player" src="${escapeHtml(state.playback.iframeUrl)}" title="Video preview" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>` : `<div class="player-placeholder"><div><span class="loading"></span><p>${video.readyToStream ? "Preparing secure preview…" : "Preview appears when processing is complete."}</p></div></div>`}

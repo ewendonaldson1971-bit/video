@@ -31,6 +31,19 @@ export function configuredAllowedOrigins(value, streamHostname, applicationHostn
   return [...new Set([...origins, applicationHostname, streamHostname].filter(Boolean))];
 }
 
+export function originAllowsHostname(origins, hostname) {
+  const target = String(hostname || "").trim().toLowerCase();
+  if (!Array.isArray(origins) || !origins.length) return true;
+  return origins.some((origin) => {
+    const allowed = String(origin || "").trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
+    if (allowed.startsWith("*.")) {
+      const root = allowed.slice(2);
+      return target !== root && target.endsWith(`.${root}`);
+    }
+    return target === allowed;
+  });
+}
+
 export function privacyFields(visibility, temporaryDays = 30) {
   const mode = normaliseVisibility(visibility);
   const fields = {

@@ -13,6 +13,7 @@ import {
   escapeHtml,
   normaliseVideoList,
   normaliseVisibility,
+  originAllowsHostname,
   privacyFields,
   publicVideo,
   toTusMetadata,
@@ -48,6 +49,31 @@ function allowedOrigins(request) {
   if (!configured) return [];
   const appHostname = new URL(applicationOrigin(request)).hostname;
   return configuredAllowedOrigins(configured, streamHost(), appHostname);
+}
+
+function applicationHostname(request) {
+  return new URL(applicationOrigin(request)).hostname;
+}
+
+function mergedPlaybackOrigins(video, request) {
+  const current = Array.isArray(video?.allowedOrigins) ? video.allowedOrigins : [];
+  const configured = allowedOrigins(request);
+  if (!current.length) return configured;
+  return configuredAllowedOrigins([...current, ...configured].join(","), streamHost(), applicationHostname(request));
+}
+
+async function ensureApplicationPlayback(video, request) {
+  const current = Array.isArray(video?.allowedOrigins) ? video.allowedOrigins : [];
+  if (!current.length || originAllowsHostname(current, applicationHostname(request))) return video;
+  try {
+    return await cloudflare(`/stream/${video.uid}`, {
+      method: "POST",
+      body: JSON.stringify({ uid: video.uid, allowedOrigins: mergedPlaybackOrigins(video, request) }),
+    });
+  } catch (error) {
+    console.warn(JSON.stringify({ event: "video.playback-origin-repair-failed", uid: video.uid, message: error.message }));
+    return video;
+  }
 }
 
 function shareSecret() {
@@ -389,6 +415,11 @@ async function handler(request) {
     const uploadURL = response.headers.get("location");
     const uid = response.headers.get("stream-media-id");
     if (!uploadURL || !uid) throw Object.assign(new Error("Cloudflare did not return the upload URL and video ID."), { status: 502 });
+    try {
+      await cloudflare(`/stream/${uid}`, { method: "POST", body: JSON.stringify({ uid, allowedOrigins: origins }) });
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "video.upload-origin-update-failed", uid, message: error.message }));
+    }
     return json({ uploadURL, uid, uploadExpiry: metadata.expiry, visibility: privacy.visibility, scheduledDeletion: privacy.scheduledDeletion || null });
   }
 
@@ -397,7 +428,8 @@ async function handler(request) {
   const [, uid, action] = videoMatch;
 
   if (!action && request.method === "GET") {
-    const video = await getAuthorisedVideo(session, uid);
+    let video = await getAuthorisedVideo(session, uid);
+    if (["editor", "admin"].includes(session.role)) video = await ensureApplicationPlayback(video, request);
     const playback = video.readyToStream ? await createPlayback(video, 1) : null;
     return json({ video: publicVideo(video), playback });
   }
@@ -448,7 +480,7 @@ async function handler(request) {
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, 0.5),
     };
     if (privacy.scheduledDeletion) body.scheduledDeletion = privacy.scheduledDeletion;
-    const origins = allowedOrigins(request);
+    const origins = mergedPlaybackOrigins(source, request);
     body.allowedOrigins = origins;
     const clip = await cloudflare("/stream/clip", { method: "POST", body: JSON.stringify(body) });
     return json({ video: publicVideo(clip) }, 201);
@@ -466,7 +498,7 @@ async function handler(request) {
       thumbnailTimestampPct: clamp(input.thumbnailTimestampPct, 0, 1, video.thumbnailTimestampPct || 0),
       meta: modelMetadata({ ...input, access: privacy.visibility }, video.meta),
     };
-    const origins = allowedOrigins(request);
+    const origins = mergedPlaybackOrigins(video, request);
     body.allowedOrigins = origins;
     const updated = await cloudflare(`/stream/${uid}`, { method: "POST", body: JSON.stringify(body) });
     return json({ video: publicVideo(updated) });
@@ -474,10 +506,10 @@ async function handler(request) {
 
   if (action === "origins" && request.method === "POST") {
     requireEditorRole(session);
-    await getAuthorisedVideo(session, uid);
+    const video = await getAuthorisedVideo(session, uid);
     const updated = await cloudflare(`/stream/${uid}`, {
       method: "POST",
-      body: JSON.stringify({ uid, allowedOrigins: allowedOrigins(request) }),
+      body: JSON.stringify({ uid, allowedOrigins: mergedPlaybackOrigins(video, request) }),
     });
     return json({ video: publicVideo(updated) });
   }

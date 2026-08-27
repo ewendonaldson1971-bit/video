@@ -87,10 +87,10 @@ optional. Leaving it empty allows the player to appear in any host app; signed
 URLs still protect private and temporary videos. If origins are restricted,
 include every SPARK/Lotus host. Vivad Video's `PUBLIC_APP_URL` hostname and the
 customer Stream hostname are added automatically so editor and emailed watch
-pages continue to work. Older videos display an **Allow playback here** repair
-action when their stored restriction does not include the current app host.
-Saving a video's settings with the variable empty also clears any older
-per-video origin restriction.
+pages continue to work. When an editor opens an older restricted video, Vivad
+automatically merges the application hostname into its existing allowed origins
+without removing its other authorised domains. A manual **Repair playback**
+action remains available if Cloudflare rejects the automatic update.
 
 ## Host-app integration
 
