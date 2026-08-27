@@ -610,7 +610,8 @@ export default async function api(request) {
   try {
     return await handler(request);
   } catch (error) {
-    console.error("Vivad Video API error", { message: error.message, stack: error.stack, diagnosticFields: error.diagnosticFields });
+    const diagnosticFields = Array.isArray(error.diagnosticFields) ? error.diagnosticFields : [];
+    console.error(`Vivad Video API error: ${error.message || "Unexpected server error."}\ndiagnosticFields=${JSON.stringify(diagnosticFields)}\n${error.stack || ""}`);
     return json({ error: error.message || "Unexpected server error." }, error.status || 500, error.retryAfter ? { "retry-after": String(error.retryAfter) } : {});
   }
 }
