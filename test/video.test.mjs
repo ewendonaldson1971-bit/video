@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canAccessVideo, configuredAllowedOrigins, creatorFor, normaliseVideoList, normaliseVisibility, originAllowsHostname, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
+import { canAccessVideo, canDiscoverVideo, canViewVideo, configuredAllowedOrigins, creatorFor, normaliseVideoList, normaliseVisibility, originAllowsHostname, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
 
 test("visibility defaults to expiring protected playback", () => {
   assert.equal(normaliseVisibility("unknown"), "expiring");
@@ -67,4 +67,14 @@ test("video ownership prevents ordinary users managing another user's upload", (
   assert.equal(canAccessVideo(owner, video), true);
   assert.equal(canAccessVideo(otherUser, video), false);
   assert.equal(canAccessVideo({ ...otherUser, role: "admin" }, video), true);
+});
+
+test("organisation videos are viewable but not manageable by another authenticated user", () => {
+  const viewer = { sub: "viewer@example.com", app: "standalone", role: "viewer" };
+  const organisationVideo = { creator: "standalone:owner@example.com", requireSignedURLs: true, meta: { vivadAccess: "organisation" } };
+  const clientVideo = { ...organisationVideo, meta: { vivadAccess: "client" } };
+  assert.equal(canViewVideo(viewer, organisationVideo), true);
+  assert.equal(canDiscoverVideo(viewer, organisationVideo), true);
+  assert.equal(canAccessVideo(viewer, organisationVideo), false);
+  assert.equal(canViewVideo(viewer, clientVideo), false);
 });

@@ -17,6 +17,13 @@ Netlify Database stores the small provider-independent catalogue and audit log.
 Existing Stream videos are progressively synchronised into the catalogue when
 the library is refreshed; no video content is copied into PostgreSQL.
 
+The database also stores acknowledgement facts: video ID, user identity, video
+version, source application and acknowledgement time. The unique video/user/
+version key makes acknowledgement submissions idempotent and requires a fresh
+acknowledgement after an editor changes the video's version. Vivad Video does
+not currently own audience assignments, so its report contains completed
+acknowledgements rather than a list of users who are still outstanding.
+
 ## Production database requirement
 
 Netlify Database supplies `NETLIFY_DB_URL` automatically in deployed functions.

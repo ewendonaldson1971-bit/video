@@ -36,6 +36,21 @@ test("video catalogue bulk sync stores workflow metadata without video bytes", a
   assert.equal("video" in stored[0], false);
 });
 
+test("acknowledgements are version-specific and idempotent", async () => {
+  const queries = [];
+  const acknowledgement = { video_uid: "video123", user_id: "user@example.com", video_version: "2", acknowledged_at: "2026-08-27T00:00:00.000Z" };
+  const database = { pool: { query: async (text, values) => {
+    queries.push({ text, values });
+    if (/SELECT video_uid/.test(text)) return { rows: [acknowledgement] };
+    return { rows: [], rowCount: /INSERT INTO vivad_video_acknowledgements/.test(text) ? 1 : 0 };
+  } } };
+  const repository = new VideoRepository({}, database);
+  const result = await repository.acknowledgeVideo({ uid: "video123", session: { sub: "user@example.com", email: "user@example.com", name: "User", app: "spark" }, version: "2" });
+  assert.deepEqual(result, acknowledgement);
+  assert.ok(queries.some(({ text, values }) => /ON CONFLICT/.test(text) && values[4] === "2"));
+  assert.ok(queries.some(({ text }) => /INSERT INTO vivad_video_events/.test(text)));
+});
+
 test("unconfigured adapters fail clearly rather than pretending to persist", async () => {
   await assert.rejects(() => new VideoRepository().saveExternal({}), /VIDEO_DATABASE_URL/);
   await assert.rejects(() => new StrapiPublisher({}).saveDraft({}), /not configured/);

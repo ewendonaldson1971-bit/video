@@ -120,6 +120,38 @@ export class VideoRepository {
     await this.recordEvent({ uid, eventType: "video.deleted", session, details });
   }
 
+  async acknowledgementStatus({ uid, session, version }) {
+    const { rows } = await this.client().pool.query(`
+      SELECT video_uid, user_id, video_version, source_app, acknowledged_at
+      FROM vivad_video_acknowledgements
+      WHERE video_uid = $1 AND user_id = $2 AND video_version = $3
+      LIMIT 1
+    `, [String(uid), String(session.sub), String(version)]);
+    return rows[0] || null;
+  }
+
+  async acknowledgeVideo({ uid, session, version }) {
+    const insertion = await this.client().pool.query(`
+      INSERT INTO vivad_video_acknowledgements
+        (video_uid, user_id, user_email, user_name, video_version, source_app)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (video_uid, user_id, video_version) DO NOTHING
+    `, [String(uid), String(session.sub), session.email ? String(session.email) : null, session.name ? String(session.name) : null, String(version), String(session.app || "standalone")]);
+    const acknowledgement = await this.acknowledgementStatus({ uid, session, version });
+    if (insertion.rowCount) await this.recordEvent({ uid, eventType: "video.acknowledged", session, details: { version: String(version) } });
+    return acknowledgement;
+  }
+
+  async acknowledgementReport({ uid, version }) {
+    const { rows } = await this.client().pool.query(`
+      SELECT user_id, user_email, user_name, video_version, source_app, acknowledged_at
+      FROM vivad_video_acknowledgements
+      WHERE video_uid = $1 AND video_version = $2
+      ORDER BY acknowledged_at DESC, user_name ASC
+    `, [String(uid), String(version)]);
+    return rows;
+  }
+
   async catalogueStatus(ownerId = null) {
     const parameters = ownerId ? [String(ownerId)] : [];
     const ownerClause = ownerId ? "AND owner_id = $1" : "";

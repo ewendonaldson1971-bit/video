@@ -7,6 +7,8 @@ import { createPublishingBundle, discourseSharePackage } from "./lib/publishing.
 import { enforceRateLimit } from "./lib/rate-limit.mjs";
 import {
   canAccessVideo,
+  canDiscoverVideo,
+  canViewVideo,
   clamp,
   configuredAllowedOrigins,
   creatorFor,
@@ -128,6 +130,20 @@ async function getAuthorisedVideo(session, uid) {
   const video = await getVideo(uid);
   if (!canAccessVideo(session, video)) throw Object.assign(new Error("You do not have access to this video."), { status: 403 });
   return video;
+}
+
+async function getViewableVideo(session, uid) {
+  const video = await getVideo(uid);
+  if (!canViewVideo(session, video)) throw Object.assign(new Error("You do not have access to this video."), { status: 403 });
+  return video;
+}
+
+function videoVersion(video) {
+  return String(video?.meta?.vivadVersion || "1").trim().slice(0, 24) || "1";
+}
+
+function csvCell(value) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
 }
 
 async function catalogueBestEffort(event, operation) {
@@ -305,10 +321,10 @@ async function handler(request) {
   if (path === "/api/videos" && request.method === "GET") {
     const url = new URL(request.url);
     const query = new URLSearchParams({ limit: "100", include_counts: "true" });
-    if (session.role !== "admin") query.set("creator", creatorFor(session));
     if (url.searchParams.get("search")) query.set("search", url.searchParams.get("search").slice(0, 100));
     const videos = normaliseVideoList(await cloudflare(`/stream?${query}`));
-    const safeVideos = videos.map(publicVideo);
+    const visibleVideos = videos.filter((video) => canDiscoverVideo(session, video));
+    const safeVideos = visibleVideos.map(publicVideo);
     await catalogueBestEffort("sync", (repository) => repository.syncStreamVideos(safeVideos, session));
     return json({ videos: safeVideos });
   }
@@ -457,15 +473,21 @@ async function handler(request) {
     return json({ uploadURL, uid, uploadExpiry: metadata.expiry, visibility: privacy.visibility, scheduledDeletion: privacy.scheduledDeletion || null });
   }
 
-  const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|settings|origins|captions|share|email|publishing|strapi))?$/);
+  const videoMatch = path.match(/^\/api\/videos\/([a-zA-Z0-9]+)(?:\/(playback|clip|settings|origins|captions|share|email|publishing|strapi|acknowledgement|acknowledgements))?$/);
   if (!videoMatch) throw Object.assign(new Error("Not found."), { status: 404 });
   const [, uid, action] = videoMatch;
 
   if (!action && request.method === "GET") {
-    let video = await getAuthorisedVideo(session, uid);
-    if (["editor", "admin"].includes(session.role)) video = await ensureApplicationPlayback(video, request);
+    let video = await getViewableVideo(session, uid);
+    const mayManage = ["editor", "admin"].includes(session.role) && canAccessVideo(session, video);
+    if (mayManage) video = await ensureApplicationPlayback(video, request);
     const playback = video.readyToStream ? await createPlayback(video, 1) : null;
-    return json({ video: publicVideo(video), playback });
+    const safe = publicVideo(video);
+    const repository = new VideoRepository();
+    const acknowledgement = repository.configured
+      ? await repository.acknowledgementStatus({ uid, session, version: videoVersion(video) })
+      : null;
+    return json({ video: safe, playback, permissions: { manage: mayManage }, acknowledgement: { available: repository.configured, required: safe.core.requiredAcknowledgement, version: safe.core.version, record: acknowledgement } });
   }
 
   if (!action && request.method === "DELETE") {
@@ -492,9 +514,42 @@ async function handler(request) {
 
   if (action === "playback" && request.method === "POST") {
     enforceRateLimit(request, "playback-token", { limit: 120, windowMs: 60 * 60 * 1000 });
-    const video = await getAuthorisedVideo(session, uid);
+    const video = await getViewableVideo(session, uid);
     const input = await requestBody(request);
     return json({ playback: await createPlayback(video, input.expiresHours || 1) });
+  }
+
+  if (action === "acknowledgement" && ["GET", "POST"].includes(request.method)) {
+    const video = await getViewableVideo(session, uid);
+    const safe = publicVideo(video);
+    const repository = new VideoRepository();
+    if (!repository.configured) throw Object.assign(new Error("Acknowledgement tracking is not configured."), { status: 503 });
+    const version = videoVersion(video);
+    if (request.method === "POST") {
+      if (!safe.core.requiredAcknowledgement) throw Object.assign(new Error("This video does not require acknowledgement."), { status: 400 });
+      enforceRateLimit(request, "acknowledgement", { limit: 60, windowMs: 60 * 60 * 1000 });
+      const record = await repository.acknowledgeVideo({ uid, session, version });
+      return json({ acknowledgement: { available: true, required: true, version, record } }, 201);
+    }
+    const record = await repository.acknowledgementStatus({ uid, session, version });
+    return json({ acknowledgement: { available: true, required: safe.core.requiredAcknowledgement, version, record } });
+  }
+
+  if (action === "acknowledgements" && request.method === "GET") {
+    requireEditorRole(session);
+    const video = await getAuthorisedVideo(session, uid);
+    const repository = new VideoRepository();
+    if (!repository.configured) throw Object.assign(new Error("Acknowledgement tracking is not configured."), { status: 503 });
+    const version = videoVersion(video);
+    const records = await repository.acknowledgementReport({ uid, version });
+    if (new URL(request.url).searchParams.get("format") === "csv") {
+      const lines = [
+        ["Name", "Email", "User ID", "Video version", "Source app", "Acknowledged at"],
+        ...records.map((record) => [record.user_name, record.user_email, record.user_id, record.video_version, record.source_app, record.acknowledged_at]),
+      ].map((row) => row.map(csvCell).join(","));
+      return new Response(`\uFEFF${lines.join("\r\n")}\r\n`, { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="acknowledgements-${uid}-v${version}.csv"`, "cache-control": "no-store" } });
+    }
+    return json({ report: { uid, version, count: records.length, records } });
   }
 
   if (action === "clip" && request.method === "POST") {
@@ -610,8 +665,7 @@ export default async function api(request) {
   try {
     return await handler(request);
   } catch (error) {
-    const diagnosticFields = Array.isArray(error.diagnosticFields) ? error.diagnosticFields : [];
-    console.error(`Vivad Video API error: ${error.message || "Unexpected server error."}\ndiagnosticFields=${JSON.stringify(diagnosticFields)}\n${error.stack || ""}`);
+    console.error(JSON.stringify({ event: "api.request.failed", status: error.status || 500, message: error.message || "Unexpected server error." }));
     return json({ error: error.message || "Unexpected server error." }, error.status || 500, error.retryAfter ? { "retry-after": String(error.retryAfter) } : {});
   }
 }

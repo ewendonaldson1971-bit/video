@@ -3,6 +3,7 @@ import { isAbandonedUpload, patchTusChunk, ticketIsExpired, uploadStorageKey } f
 
 const app = document.querySelector("#app");
 const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get("demo") === "1";
+const demoRole = new URLSearchParams(location.search).get("role") === "viewer" ? "viewer" : "admin";
 const demoOriginMismatch = demoMode && new URLSearchParams(location.search).get("origin-test") === "1";
 const state = {
   token: sessionStorage.getItem("vivadVideoSession") || "",
@@ -11,6 +12,9 @@ const state = {
   videos: [],
   management: null,
   selected: null,
+  permissions: null,
+  acknowledgement: null,
+  acknowledgementReport: null,
   playback: null,
   playbackRequested: false,
   file: null,
@@ -39,6 +43,7 @@ const demoVideo = {
   thumbnailTimestampPct: 0.35,
   scheduledDeletion: null,
   allowedOrigins: demoOriginMismatch ? ["old-video-app.example"] : [],
+  core: { version: "1", requiredAcknowledgement: true, relatedLinks: [] },
 };
 
 function escapeHtml(value) {
@@ -87,6 +92,13 @@ function formatDate(value) {
   return new Intl.DateTimeFormat("en-AU", { dateStyle: "medium" }).format(new Date(value));
 }
 
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : null;
+  } catch { return null; }
+}
+
 function initials(name) {
   return String(name || "V").split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 }
@@ -132,10 +144,17 @@ async function demoApi(path, options) {
   if (path === "/session") return { session: state.session };
   if (path === "/videos") return { videos: [demoVideo] };
   if (path === "/management") return { database: { configured: true }, catalogue: { counts: [{ status: "ready", count: 1 }], recentEvents: [] } };
-  if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null };
+  if (path.endsWith("/acknowledgements")) return { report: { uid: demoVideo.uid, version: demoVideo.core.version, count: 0, records: [] } };
+  if (path.endsWith("/acknowledgement")) return { acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: options.method === "POST" ? { acknowledged_at: new Date().toISOString() } : null } };
+  if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null, permissions: { manage: demoRole !== "viewer" }, acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: null } };
   if (path.startsWith("/videos/demo-video-id") && options.method === "DELETE") return { deleted: true, uid: demoVideo.uid };
   if (path.includes("/clip")) return { video: { ...demoVideo, uid: "demo-edited-video", name: "Customer installation – edit.mp4", status: { state: "queued", pctComplete: "0" }, readyToStream: false } };
-  if (path.includes("/settings")) return { video: demoVideo };
+  if (path.includes("/settings")) {
+    const values = JSON.parse(options.body || "{}");
+    Object.assign(demoVideo, { name: values.name || demoVideo.name, purpose: values.purpose || demoVideo.purpose, description: values.description ?? demoVideo.description, visibility: values.visibility || demoVideo.visibility, access: values.visibility || demoVideo.access, thumbnailTimestampPct: values.thumbnailTimestampPct ?? demoVideo.thumbnailTimestampPct });
+    demoVideo.core = { ...demoVideo.core, version: values.version || demoVideo.core.version, requiredAcknowledgement: Boolean(values.requiredAcknowledgement), department: values.department || "", topic: values.topic || "", category: values.category || "", contentOwner: values.owner || "", reviewDate: values.reviewDate || "", expiryDate: values.expiryDate || "", relatedLinks: String(values.relatedLinks || "").split(/\r?\n/).map((value) => value.trim()).filter(Boolean) };
+    return { video: demoVideo };
+  }
   if (path.includes("/origins")) {
     demoVideo.allowedOrigins = [];
     return { video: demoVideo };
@@ -209,6 +228,7 @@ function logout() {
 }
 
 function shell() {
+  const canEdit = ["editor", "admin"].includes(state.session?.role);
   app.innerHTML = `
     <header class="app-header">
       <div class="header-inner">
@@ -233,12 +253,11 @@ function shell() {
         </div>
         <button class="button button-secondary" id="refresh-videos">Refresh library</button>
       </section>
-      <nav class="workflow" aria-label="Video workflow">
-        <button data-section="upload"><span class="step-number">01</span>Upload</button>
-        <button data-section="library"><span class="step-number">02</span>Library</button>
-        <button data-section="edit"><span class="step-number">03</span>Edit</button>
-        <button data-section="share"><span class="step-number">04</span>Share</button>
-        ${["editor", "admin"].includes(state.session?.role) ? '<button data-section="manage"><span class="step-number">05</span>Manage</button>' : ""}
+      <nav class="workflow" style="--workflow-columns:${canEdit ? 5 : 2}" aria-label="Video workflow">
+        ${canEdit ? '<button data-section="upload"><span class="step-number">01</span>Upload</button>' : ""}
+        <button data-section="library"><span class="step-number">${canEdit ? "02" : "01"}</span>Library</button>
+        <button data-section="edit"><span class="step-number">${canEdit ? "03" : "02"}</span>${canEdit ? "Edit" : "Watch"}</button>
+        ${canEdit ? '<button data-section="share"><span class="step-number">04</span>Share</button><button data-section="manage"><span class="step-number">05</span>Manage</button>' : ""}
       </nav>
       <div id="view"></div>
     </main>
@@ -251,6 +270,8 @@ function shell() {
 }
 
 function navigate(section) {
+  const canEdit = ["editor", "admin"].includes(state.session?.role);
+  if (!canEdit && ["upload", "share", "manage"].includes(section)) section = "library";
   if ((section === "edit" || section === "share") && !state.selected) {
     toast("Select a video from the library first.", "error");
     section = "library";
@@ -826,6 +847,9 @@ async function selectVideo(uid) {
     const result = await api(`/videos/${uid}`);
     state.selected = result.video;
     state.playback = result.playback;
+    state.permissions = result.permissions || { manage: ["editor", "admin"].includes(state.session?.role) };
+    state.acknowledgement = result.acknowledgement || null;
+    state.acknowledgementReport = null;
     state.playbackRequested = true;
     emitHostEvent("video.selected", { uid });
     navigate(result.video.readyToStream ? "edit" : "library");
@@ -837,9 +861,49 @@ async function selectVideo(uid) {
   finally { setBusy(false); }
 }
 
+function renderViewer() {
+  const video = state.selected;
+  if (!video) return navigate("library");
+  const acknowledgement = state.acknowledgement || { available: false, required: false, version: video.core?.version || "1", record: null };
+  const record = acknowledgement.record;
+  const links = (video.core?.relatedLinks || []).map(safeExternalUrl).filter(Boolean);
+  const metadata = [
+    ["Purpose", video.purpose], ["Version", video.core?.version || "1"], ["Owner", video.core?.contentOwner],
+    ["Department", video.core?.department], ["Topic", video.core?.topic], ["Review date", video.core?.reviewDate ? formatDate(video.core.reviewDate) : ""],
+  ].filter(([, value]) => value);
+  document.querySelector("#view").innerHTML = `
+    <section class="panel viewer-panel">
+      <div class="panel-header"><div><p class="eyebrow">Watch</p><h2>${escapeHtml(video.name)}</h2></div><span class="badge badge-${escapeHtml(video.visibility)}">${escapeHtml(video.visibility)}</span></div>
+      <div class="panel-body viewer-layout">
+        <div>
+          ${state.playback?.iframeUrl ? `<iframe class="player-frame" src="${escapeHtml(state.playback.iframeUrl)}" title="${escapeHtml(video.name)}" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>` : '<div class="player-placeholder"><p>Preview is not available yet.</p></div>'}
+          <div class="viewer-copy"><p>${escapeHtml(video.description || "No description has been provided.")}</p></div>
+        </div>
+        <aside class="viewer-details">
+          <div class="tool-card"><h3>Video details</h3><dl class="metadata-list">${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>${links.length ? `<h4>Related documents</h4><ul class="related-links">${links.map((url) => `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a></li>`).join("")}</ul>` : ""}</div>
+          ${acknowledgement.required ? `<div class="tool-card acknowledgement-card ${record ? "complete" : ""}"><h3>Acknowledgement</h3>${record ? `<p><strong>Current version acknowledged.</strong></p><p class="muted">Version ${escapeHtml(acknowledgement.version)} · ${escapeHtml(new Date(record.acknowledged_at).toLocaleString("en-AU"))}</p>` : `<p>Confirm that you have read and understood this video.</p><button class="button button-primary" id="acknowledge-video" type="button" data-busy ${acknowledgement.available ? "" : "disabled"}>Acknowledge this video</button>`}</div>` : ""}
+        </aside>
+      </div>
+    </section>`;
+  document.querySelector("#acknowledge-video")?.addEventListener("click", acknowledgeSelectedVideo);
+}
+
+async function acknowledgeSelectedVideo() {
+  setBusy(true);
+  try {
+    const result = await api(`/videos/${state.selected.uid}/acknowledgement`, { method: "POST", body: JSON.stringify({}) });
+    state.acknowledgement = result.acknowledgement;
+    renderViewer();
+    emitHostEvent("video.acknowledged", { uid: state.selected.uid, version: result.acknowledgement.version });
+    toast("Video acknowledged.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
 function renderEditor() {
   const video = state.selected;
   if (!video) return navigate("library");
+  if (!state.permissions?.manage) return renderViewer();
   const duration = Math.max(0.1, video.duration || 0.1);
   const playbackOriginBlocked = video.readyToStream && !playbackAllowedOnCurrentHost(video);
   document.querySelector("#view").innerHTML = `
@@ -908,8 +972,9 @@ function renderEditor() {
               <div class="grid-equal workflow-date-grid"><label class="field"><span>Review date</span><input id="edit-review-date" type="date" value="${escapeHtml(video.core?.reviewDate || "")}"></label><label class="field"><span>Content expiry</span><input id="edit-expiry-date" type="date" value="${escapeHtml(video.core?.expiryDate?.slice?.(0, 10) || "")}"></label></div>
               <label class="field"><span>Related document links (one per line)</span><textarea id="edit-related-links">${escapeHtml((video.core?.relatedLinks || []).join("\n"))}</textarea></label>
               <label class="check-field"><input id="edit-acknowledgement" type="checkbox" ${video.core?.requiredAcknowledgement ? "checked" : ""}><span>This video requires acknowledgement</span></label>
-              <p class="expiry-note">The requirement is stored now. Per-user acknowledgement history will become available with the viewer tracking workflow.</p>
+              <p class="expiry-note">Acknowledgements are recorded per user and per video version. Changing the version starts a new acknowledgement record.</p>
             </div>
+            ${video.core?.requiredAcknowledgement ? `<div class="tool-card"><h3>Acknowledgements</h3><p class="muted">Current version: ${escapeHtml(video.core.version || "1")}</p><div id="acknowledgement-report"><p class="muted">Load the report to see acknowledgements for this version.</p></div><div class="button-row"><button class="button button-secondary button-small" id="load-acknowledgements" type="button" data-busy>Load report</button><button class="button button-quiet button-small" id="export-acknowledgements" type="button">Export CSV</button></div></div>` : ""}
             <div class="tool-card">
               <h3>Captions and downloads</h3>
               <p class="muted">Generate English captions, manage WebVTT files, or request MP4/M4A derivatives from Cloudflare.</p>
@@ -1091,6 +1156,47 @@ function bindEditor(duration) {
   document.querySelector("#generate-mp4").addEventListener("click", () => generateDownload("default"));
   document.querySelector("#generate-audio").addEventListener("click", () => generateDownload("audio"));
   document.querySelector("#delete-video")?.addEventListener("click", () => deleteVideo());
+  document.querySelector("#load-acknowledgements")?.addEventListener("click", loadAcknowledgementReport);
+  document.querySelector("#export-acknowledgements")?.addEventListener("click", exportAcknowledgementReport);
+}
+
+function renderAcknowledgementReport() {
+  const target = document.querySelector("#acknowledgement-report");
+  if (!target) return;
+  const report = state.acknowledgementReport;
+  if (!report) return;
+  target.innerHTML = report.records.length
+    ? `<p><strong>${report.count} acknowledgement${report.count === 1 ? "" : "s"}</strong></p><div class="acknowledgement-list">${report.records.map((record) => `<div><strong>${escapeHtml(record.user_name || record.user_email || record.user_id)}</strong><small>${escapeHtml(record.user_email || record.user_id)} · ${escapeHtml(new Date(record.acknowledged_at).toLocaleString("en-AU"))}</small></div>`).join("")}</div>`
+    : '<p class="muted">No one has acknowledged this version yet.</p>';
+}
+
+async function loadAcknowledgementReport() {
+  setBusy(true);
+  try {
+    const result = await api(`/videos/${state.selected.uid}/acknowledgements`);
+    state.acknowledgementReport = result.report;
+    renderAcknowledgementReport();
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function exportAcknowledgementReport() {
+  try {
+    const response = await fetch(`/api/videos/${encodeURIComponent(state.selected.uid)}/acknowledgements?format=csv`, { headers: { authorization: `Bearer ${state.token}` } });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || "Unable to export acknowledgements.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `acknowledgements-${state.selected.uid}-v${state.selected.core?.version || "1"}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (error) { toast(error.message, "error"); }
 }
 
 async function requestVideoDeletion(video) {
@@ -1164,6 +1270,8 @@ async function refreshSelected(notify = true, bustPlaybackCache = false) {
     const result = await api(`/videos/${state.selected.uid}`);
     state.selected = result.video;
     state.playback = result.playback;
+    state.permissions = result.permissions || state.permissions;
+    state.acknowledgement = result.acknowledgement || state.acknowledgement;
     if (bustPlaybackCache && state.playback?.iframeUrl) {
       const iframeUrl = new URL(state.playback.iframeUrl);
       iframeUrl.searchParams.set("vivadRefresh", String(Date.now()));
@@ -1403,7 +1511,7 @@ async function startApp() {
   if (requestedVideo) {
     try { await selectVideo(requestedVideo); return; } catch { /* Fall back to upload. */ }
   }
-  navigate(state.videos.length ? "library" : "upload");
+  navigate(state.videos.length || state.session?.role === "viewer" ? "library" : "upload");
   emitHostEvent("editor.ready", { app: state.session?.app, context: state.session?.context });
 }
 
@@ -1453,7 +1561,7 @@ async function renderPublicVideo(uid) {
 
 async function initialise() {
   if (demoMode) {
-    state.session = { sub: "demo", name: "Vivad user", app: "standalone", role: "admin", mode: "standalone" };
+    state.session = { sub: "demo", name: "Vivad user", app: "standalone", role: demoRole, mode: "standalone" };
     state.token = "demo";
     return startApp();
   }

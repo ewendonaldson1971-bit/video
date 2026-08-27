@@ -25,6 +25,9 @@ iRedMail SMTP credentials stored in Netlify environment variables for delivery.
 - Protected direct video-file URL imports through Cloudflare Stream
 - Stable customer share pages that generate fresh short-lived playback tokens
 - Public SEO watch pages and reusable Strapi/Discourse publishing output
+- Viewer-only watch workflow for organisation and public videos
+- Version-specific training/SOP acknowledgement records with editor CSV export
+- Installable web-app metadata and Vivad Video icons for desktop taskbars
 
 ## Access modes
 
@@ -114,11 +117,17 @@ event handling and framing restrictions.
 
 Cloudflare Stream stores the video files. Netlify Database stores a lightweight
 catalogue of provider IDs, ownership references, workflow metadata, upload state
-and audit events. The **Manage** view synchronises existing Stream records and
+audit events and per-user, per-version acknowledgements. The **Manage** view synchronises existing Stream records and
 shows pending, abandoned, processing and failed uploads. `VIDEO_DATABASE_URL`
 can point to another PostgreSQL provider; otherwise Netlify supplies
 `NETLIFY_DB_URL` automatically. The app does not use `localStorage` as a
 multi-user database.
+
+Videos marked **Require acknowledgement** show an acknowledgement action to
+viewers. Editors and administrators who can manage the video can load the
+current version's acknowledgement report and export it as CSV. The report lists
+completed acknowledgements; a complete outstanding-user report will require an
+assigned audience or roster supplied by SPARK or another host application.
 
 ## Verification
 

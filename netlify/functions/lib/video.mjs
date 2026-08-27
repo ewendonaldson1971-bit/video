@@ -114,6 +114,16 @@ export function canAccessVideo(session, video) {
   return session.role === "admin" || video.creator === creatorFor(session);
 }
 
+export function canViewVideo(session, video) {
+  if (canAccessVideo(session, video)) return true;
+  return ["public", "link", "organisation"].includes(visibilityFromVideo(video));
+}
+
+export function canDiscoverVideo(session, video) {
+  if (canAccessVideo(session, video)) return true;
+  return ["public", "organisation"].includes(visibilityFromVideo(video));
+}
+
 export function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
