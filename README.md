@@ -68,10 +68,15 @@ Set `AUTH_PROVIDER=vivad` and configure `VIVAD_AUTH_URL` with the same
 email address and password from its Netlify Function to that service, never
 stores the password or exposes the upstream token to the browser, and creates
 its own short-lived session only after the service accepts the credentials.
-The service must also return the Lotus Directory field `Vivad Video Role` as
-`Admin`, `Editor` or `Viewer` (case-insensitive). Vivad Video also accepts the
-JSON aliases `vivadVideoRole` and `vivad_video_role`. Blank, `No Access` and
-unknown values are denied; authenticated users are never promoted implicitly.
+Authorization is separate from credential validation. Configure
+`LOTUS_DIRECTORY_QUERY_URL` with the Google Sheets query endpoint for
+Lotus_Directory, plus its email and role column letters. After the Calculator
+authentication service accepts the credentials, the Netlify Function asks
+Google Sheets for only the matching email and `Vivad Video Role`; it does not
+download the other directory columns.
+`Admin`, `Editor` and `Viewer` are accepted
+case-insensitively; blank, `No Access` and unknown values are denied. Directory
+records and upstream credentials are never returned to the browser.
 Authentication is isolated in `netlify/functions/lib/auth.mjs` so a future
 STRAPI provider can replace the current service without changing the login
 interface or application session format.

@@ -43,6 +43,106 @@ function vivadVideoRole(payload = {}) {
   return search(payload);
 }
 
+function normaliseFieldName(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+export function lotusDirectoryRole(values, email) {
+  const expectedEmail = String(email || "").trim().toLowerCase();
+  if (!expectedEmail || !Array.isArray(values)) return null;
+
+  if (values.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
+    const record = values.find((row) => Object.entries(row).some(([key, value]) =>
+      ["email", "emailaddress", "useremail", "username", "workemail"].includes(normaliseFieldName(key))
+      && String(value || "").trim().toLowerCase() === expectedEmail));
+    return record ? vivadVideoRole(record) : null;
+  }
+
+  const headerLimit = Math.min(values.length, 20);
+  for (let headerIndex = 0; headerIndex < headerLimit; headerIndex += 1) {
+    const headers = Array.isArray(values[headerIndex]) ? values[headerIndex].map(normaliseFieldName) : [];
+    const emailIndex = headers.findIndex((header) => ["email", "emailaddress", "useremail", "username", "workemail"].includes(header));
+    const roleIndex = headers.findIndex((header) => ["vivadvideorole", "vivadvideo"].includes(header));
+    if (emailIndex < 0 || roleIndex < 0) continue;
+    const record = values.slice(headerIndex + 1).find((row) =>
+      Array.isArray(row) && String(row[emailIndex] || "").trim().toLowerCase() === expectedEmail);
+    return record ? normaliseVivadVideoRole(record[roleIndex]) : null;
+  }
+  return null;
+}
+
+export function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  const source = String(text || "");
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (character === '"' && source[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = false;
+      } else {
+        field += character;
+      }
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === ",") {
+      row.push(field);
+      field = "";
+    } else if (character === "\n" || character === "\r") {
+      if (character === "\r" && source[index + 1] === "\n") index += 1;
+      row.push(field);
+      if (row.some((value) => value !== "")) rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += character;
+    }
+  }
+  row.push(field);
+  if (row.some((value) => value !== "")) rows.push(row);
+  return rows;
+}
+
+async function fetchLotusDirectoryRole({ email, env, fetchImpl }) {
+  if (!env.LOTUS_DIRECTORY_QUERY_URL) {
+    throw authenticationError("Lotus Directory authorization is not configured.", 503);
+  }
+  let url;
+  try {
+    url = new URL(env.LOTUS_DIRECTORY_QUERY_URL);
+    if (url.protocol !== "https:") throw new Error("HTTPS required");
+  } catch {
+    throw authenticationError("Lotus Directory authorization is not configured.", 503);
+  }
+  const emailColumn = String(env.LOTUS_DIRECTORY_EMAIL_COLUMN || "A").trim().toUpperCase();
+  const roleColumn = String(env.LOTUS_DIRECTORY_ROLE_COLUMN || "J").trim().toUpperCase();
+  if (!/^[A-Z]{1,3}$/.test(emailColumn) || !/^[A-Z]{1,3}$/.test(roleColumn)) {
+    throw authenticationError("Lotus Directory authorization is not configured.", 503);
+  }
+  const queryEmail = email.replaceAll("\\", "\\\\").replaceAll("'", "\\'");
+  url.searchParams.set("tqx", "out:csv");
+  url.searchParams.set("tq", `select ${emailColumn},${roleColumn} where ${emailColumn} = '${queryEmail}'`);
+
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: "GET",
+      headers: { accept: "text/csv" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(12000),
+    });
+  } catch {
+    throw authenticationError("The Lotus Directory authorization service is temporarily unavailable.", 502);
+  }
+  if (!response.ok) throw authenticationError("The Lotus Directory authorization service could not confirm access.", 502);
+  return lotusDirectoryRole(parseCsvRows(await response.text()), email);
+}
+
 export function authenticationPayloadFields(payload = {}) {
   const fields = [];
   const seen = new Set();
@@ -90,7 +190,7 @@ export async function authenticateStandalone(input, { env = process.env, fetchIm
     }
 
     const user = payload.user || {};
-    const role = vivadVideoRole(payload);
+    const role = vivadVideoRole(payload) || await fetchLotusDirectoryRole({ email, env, fetchImpl });
     if (!role) {
       const error = authenticationError("Your Lotus Directory record does not grant access to Vivad Video. Ask an administrator to set Vivad Video Role to Viewer, Editor or Admin.", 403);
       error.diagnosticFields = authenticationPayloadFields(payload);
