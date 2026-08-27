@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { configuredAllowedOrigins, normaliseVideoList, normaliseVisibility, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
+import { canAccessVideo, configuredAllowedOrigins, creatorFor, normaliseVideoList, normaliseVisibility, privacyFields, toTusMetadata, visibilityFromVideo } from "../netlify/functions/lib/video.mjs";
 
 test("visibility defaults to expiring protected playback", () => {
   assert.equal(normaliseVisibility("unknown"), "expiring");
@@ -50,4 +50,13 @@ test("video lists accept both Cloudflare response shapes", () => {
   assert.deepEqual(normaliseVideoList(videos), videos);
   assert.deepEqual(normaliseVideoList({ videos }), videos);
   assert.deepEqual(normaliseVideoList(null), []);
+});
+
+test("video ownership prevents ordinary users managing another user's upload", () => {
+  const owner = { sub: "owner@example.com", app: "standalone", role: "editor" };
+  const otherUser = { sub: "other@example.com", app: "standalone", role: "editor" };
+  const video = { creator: creatorFor(owner) };
+  assert.equal(canAccessVideo(owner, video), true);
+  assert.equal(canAccessVideo(otherUser, video), false);
+  assert.equal(canAccessVideo({ ...otherUser, role: "admin" }, video), true);
 });

@@ -402,6 +402,26 @@ async function handler(request) {
     return json({ video: publicVideo(video), playback });
   }
 
+  if (!action && request.method === "DELETE") {
+    requireEditorRole(session);
+    const video = await getAuthorisedVideo(session, uid);
+    const input = await requestBody(request);
+    if (input.confirmation !== "DELETE" || input.confirmUid !== uid) {
+      throw Object.assign(new Error("Deletion confirmation did not match this video."), { status: 400 });
+    }
+    await cloudflare(`/stream/${uid}`, { method: "DELETE" });
+    console.info(JSON.stringify({
+      event: "video.deleted",
+      uid,
+      name: String(video?.meta?.name || "Untitled video").slice(0, 180),
+      actor: String(session.sub),
+      app: String(session.app || "standalone"),
+      role: String(session.role),
+      deletedAt: new Date().toISOString(),
+    }));
+    return json({ deleted: true, uid });
+  }
+
   if (action === "playback" && request.method === "POST") {
     enforceRateLimit(request, "playback-token", { limit: 120, windowMs: 60 * 60 * 1000 });
     const video = await getAuthorisedVideo(session, uid);

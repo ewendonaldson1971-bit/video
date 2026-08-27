@@ -106,6 +106,7 @@ textarea { min-height: 110px; resize: vertical; }
 .button-secondary { color: var(--vivad-blue); background: #fff; border-color: var(--vivad-blue); }
 .button-quiet { color: var(--vivad-charcoal); background: transparent; border-color: var(--vivad-border); }
 .button-danger { color: #fff; background: var(--vivad-red); }
+.button-danger:hover { background: #bd0024; }
 .button-small { min-height: 36px; padding: 0 16px; font-size: 0.86rem; }
 .button-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 
@@ -218,6 +219,7 @@ textarea { min-height: 110px; resize: vertical; }
 .player-placeholder { aspect-ratio: 16 / 9; border-radius: 8px; background: #24262a; color: #fff; display: grid; place-items: center; text-align: center; padding: 24px; }
 .editor-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(310px, 0.65fr); gap: 24px; }
 .editor-tools { display: grid; gap: 18px; }
+.danger-zone { border-color: rgba(228, 0, 43, 0.35); background: rgba(228, 0, 43, 0.035); }
 .tool-card { border: 1px solid var(--vivad-border); border-radius: 8px; padding: 18px; }
 .tool-card h3 { display: flex; align-items: center; justify-content: space-between; }
 .time-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }

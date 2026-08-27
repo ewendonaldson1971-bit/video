@@ -116,6 +116,8 @@ npm test
 npm run build
 ```
 
-The app deliberately does not include deletion controls in the initial release.
-Temporary deletion is scheduled through Cloudflare, while permanent removal
-should be added only with an explicit confirmation and audit trail.
+Editors can permanently delete videos attributed to their own Vivad account;
+administrators can delete any accessible video. The server rechecks ownership,
+requires the exact video ID plus an explicit `DELETE` confirmation, and writes a
+structured deletion entry to the Netlify function log. Temporary deletion
+continues to be scheduled through Cloudflare.

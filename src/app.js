@@ -131,6 +131,7 @@ async function demoApi(path, options) {
   if (path === "/session") return { session: state.session };
   if (path === "/videos") return { videos: [demoVideo] };
   if (path.startsWith("/videos/demo-video-id") && (!options.method || options.method === "GET")) return { video: demoVideo, playback: null };
+  if (path.startsWith("/videos/demo-video-id") && options.method === "DELETE") return { deleted: true, uid: demoVideo.uid };
   if (path.includes("/clip")) return { video: { ...demoVideo, uid: "demo-edited-video", name: "Customer installation – edit.mp4", status: { state: "queued", pctComplete: "0" }, readyToStream: false } };
   if (path.includes("/settings")) return { video: demoVideo };
   if (path.includes("/origins")) {
@@ -784,6 +785,7 @@ function renderEditor() {
               <button class="button button-quiet" id="undo-settings" type="button">Undo unsaved changes</button>
               <button class="button button-secondary" id="generate-captions" data-busy ${video.readyToStream ? "" : "disabled"}>Generate captions</button>
             </div>
+            ${["editor", "admin"].includes(state.session?.role) ? `<div class="tool-card danger-zone"><h3>Delete video</h3><p class="muted">Permanently removes this video and its stored Stream copies. This cannot be undone.</p><button class="button button-danger" id="delete-video" type="button" data-busy>Delete video</button></div>` : ""}
           </div>
         </div>
       </div>
@@ -951,6 +953,26 @@ function bindEditor(duration) {
   document.querySelector("#caption-file").addEventListener("change", uploadCaptionFile);
   document.querySelector("#generate-mp4").addEventListener("click", () => generateDownload("default"));
   document.querySelector("#generate-audio").addEventListener("click", () => generateDownload("audio"));
+  document.querySelector("#delete-video")?.addEventListener("click", deleteVideo);
+}
+
+async function deleteVideo() {
+  const video = state.selected;
+  const confirmation = window.prompt(`Permanently delete “${video.name}” from Cloudflare Stream?\n\nThis cannot be undone. Type DELETE to continue.`);
+  if (confirmation === null) return;
+  if (confirmation.trim() !== "DELETE") return toast("Video was not deleted. Type DELETE exactly to confirm.", "error");
+  setBusy(true);
+  try {
+    await api(`/videos/${video.uid}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE", confirmUid: video.uid }) });
+    state.videos = state.videos.filter((item) => item.uid !== video.uid);
+    state.selected = null;
+    state.playback = null;
+    state.playbackRequested = false;
+    emitHostEvent("video.deleted", { uid: video.uid });
+    navigate("library");
+    toast(`“${video.name}” was permanently deleted.`);
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
 }
 
 async function repairPlaybackOrigin() {
