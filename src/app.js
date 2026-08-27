@@ -900,14 +900,15 @@ function renderEditor() {
             </div>
             <div class="tool-card">
               <h3>Workflow metadata</h3>
-              <p class="muted">Used for training, SOP and internal organisation. A database is required for reliable per-user acknowledgement tracking.</p>
+              <p class="muted">Used for training, SOP and internal organisation. These fields are saved in the connected video catalogue.</p>
               <label class="field"><span>Department or team</span><input id="edit-department" value="${escapeHtml(video.core?.department || "")}"></label>
               <label class="field"><span>Training topic</span><input id="edit-topic" value="${escapeHtml(video.core?.topic || "")}"></label>
               <label class="field"><span>SOP category</span><input id="edit-category" value="${escapeHtml(video.core?.category || "")}"></label>
               <div class="grid-equal"><label class="field"><span>Content owner</span><input id="edit-owner" value="${escapeHtml(video.core?.contentOwner || "")}"></label><label class="field"><span>Version</span><input id="edit-version" value="${escapeHtml(video.core?.version || "1")}"></label></div>
-              <div class="grid-equal"><label class="field"><span>Review date</span><input id="edit-review-date" type="date" value="${escapeHtml(video.core?.reviewDate || "")}"></label><label class="field"><span>Content expiry</span><input id="edit-expiry-date" type="date" value="${escapeHtml(video.core?.expiryDate?.slice?.(0, 10) || "")}"></label></div>
+              <div class="grid-equal workflow-date-grid"><label class="field"><span>Review date</span><input id="edit-review-date" type="date" value="${escapeHtml(video.core?.reviewDate || "")}"></label><label class="field"><span>Content expiry</span><input id="edit-expiry-date" type="date" value="${escapeHtml(video.core?.expiryDate?.slice?.(0, 10) || "")}"></label></div>
               <label class="field"><span>Related document links (one per line)</span><textarea id="edit-related-links">${escapeHtml((video.core?.relatedLinks || []).join("\n"))}</textarea></label>
-              <label class="check-field"><input id="edit-acknowledgement" type="checkbox" ${video.core?.requiredAcknowledgement ? "checked" : ""}><span>Require acknowledgement when server-side tracking is configured</span></label>
+              <label class="check-field"><input id="edit-acknowledgement" type="checkbox" ${video.core?.requiredAcknowledgement ? "checked" : ""}><span>This video requires acknowledgement</span></label>
+              <p class="expiry-note">The requirement is stored now. Per-user acknowledgement history will become available with the viewer tracking workflow.</p>
             </div>
             <div class="tool-card">
               <h3>Captions and downloads</h3>

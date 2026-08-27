@@ -143,6 +143,9 @@ textarea { min-height: 110px; resize: vertical; }
 .panel-body { padding: 26px; }
 .grid-two { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr); gap: 24px; }
 .grid-equal { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.grid-equal > * { min-width: 0; }
+.workflow-date-grid { grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 0 20px; }
+.workflow-date-grid input[type="date"] { min-width: 0; max-width: 100%; }
 .creation-tabs { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 24px; }
 .create-workspace { align-items: start; }
 .create-source { min-width: 0; }
