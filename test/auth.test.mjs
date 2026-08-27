@@ -39,7 +39,8 @@ test("login is denied when Lotus Directory has not assigned a Vivad Video role",
       env,
       fetchImpl: async () => new Response(JSON.stringify({ token: "upstream-token", user: { id: 42, username: "user@vivad.com.au" } })),
     }),
-    (error) => error.status === 403 && /Lotus Directory/i.test(error.message),
+    (error) => error.status === 403 && /Lotus Directory/i.test(error.message)
+      && error.diagnosticFields.includes("user.username") && !error.diagnosticFields.includes("token.hidden"),
   );
 });
 

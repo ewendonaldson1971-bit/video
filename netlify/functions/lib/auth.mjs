@@ -92,8 +92,9 @@ export async function authenticateStandalone(input, { env = process.env, fetchIm
     const user = payload.user || {};
     const role = vivadVideoRole(payload);
     if (!role) {
-      console.warn(JSON.stringify({ event: "auth.vivad-video-role-missing", responseFields: authenticationPayloadFields(payload) }));
-      throw authenticationError("Your Lotus Directory record does not grant access to Vivad Video. Ask an administrator to set Vivad Video Role to Viewer, Editor or Admin.", 403);
+      const error = authenticationError("Your Lotus Directory record does not grant access to Vivad Video. Ask an administrator to set Vivad Video Role to Viewer, Editor or Admin.", 403);
+      error.diagnosticFields = authenticationPayloadFields(payload);
+      throw error;
     }
     return {
       sub: String(user.id || user.username || user.email || email),
