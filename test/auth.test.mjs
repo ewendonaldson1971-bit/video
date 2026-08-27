@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { authenticateStandalone, authenticationProvider, normaliseVivadVideoRole } from "../netlify/functions/lib/auth.mjs";
+import { authenticateStandalone, authenticationPayloadFields, authenticationProvider, normaliseVivadVideoRole } from "../netlify/functions/lib/auth.mjs";
 
 const env = {
   AUTH_PROVIDER: "vivad",
@@ -49,6 +49,13 @@ test("roles can be returned from a nested Lotus Directory profile", async () => 
     fetchImpl: async () => new Response(JSON.stringify({ token: "upstream-token", user: { id: 42, profile: { directory: { "Vivad Video Role": "Viewer" } } } })),
   });
   assert.equal(identity.role, "viewer");
+});
+
+test("authentication diagnostics report structure without traversing secrets", () => {
+  assert.deepEqual(
+    authenticationPayloadFields({ token: { hidden: true }, user: { id: 42, profile: { roleName: "Editor" } } }),
+    ["token", "user", "user.id", "user.profile", "user.profile.roleName"],
+  );
 });
 
 test("Vivad authentication rejects incorrect credentials", async () => {

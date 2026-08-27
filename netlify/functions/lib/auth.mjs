@@ -43,6 +43,23 @@ function vivadVideoRole(payload = {}) {
   return search(payload);
 }
 
+export function authenticationPayloadFields(payload = {}) {
+  const fields = [];
+  const seen = new Set();
+  const sensitive = /password|secret|token|credential|authorization/i;
+  const visit = (value, path = "", depth = 0) => {
+    if (!value || typeof value !== "object" || depth > 6 || seen.has(value) || fields.length >= 80) return;
+    seen.add(value);
+    for (const [key, child] of Object.entries(value)) {
+      const fieldPath = path ? `${path}.${key}` : key;
+      fields.push(fieldPath);
+      if (!sensitive.test(key)) visit(child, fieldPath, depth + 1);
+    }
+  };
+  visit(payload);
+  return fields;
+}
+
 export async function authenticateStandalone(input, { env = process.env, fetchImpl = fetch } = {}) {
   const provider = authenticationProvider(env);
 
@@ -74,7 +91,10 @@ export async function authenticateStandalone(input, { env = process.env, fetchIm
 
     const user = payload.user || {};
     const role = vivadVideoRole(payload);
-    if (!role) throw authenticationError("Your Lotus Directory record does not grant access to Vivad Video. Ask an administrator to set Vivad Video Role to Viewer, Editor or Admin.", 403);
+    if (!role) {
+      console.warn(JSON.stringify({ event: "auth.vivad-video-role-missing", responseFields: authenticationPayloadFields(payload) }));
+      throw authenticationError("Your Lotus Directory record does not grant access to Vivad Video. Ask an administrator to set Vivad Video Role to Viewer, Editor or Admin.", 403);
+    }
     return {
       sub: String(user.id || user.username || user.email || email),
       name: String(user.name || user.displayName || user.username || email),
