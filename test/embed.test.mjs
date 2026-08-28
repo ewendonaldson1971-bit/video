@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createVivadVideoEmbedToken } from "../integration/create-embed-token.mjs";
 import { verifyToken } from "../netlify/functions/lib/security.mjs";
 
@@ -17,4 +18,10 @@ test("embed token carries the signed reusable host contract", () => {
 test("embed token rejects wildcard or path-based origins", () => {
   assert.throws(() => createVivadVideoEmbedToken({ secret, userId: "42", app: "spark", origin: "https://*.example.com" }), /origin/);
   assert.throws(() => createVivadVideoEmbedToken({ secret, userId: "42", app: "spark", origin: "https://spark.example.com/path" }), /origin/);
+});
+
+test("production security policy permits every external video player", () => {
+  const netlifyConfig = readFileSync(new URL("../netlify.toml", import.meta.url), "utf8");
+  assert.match(netlifyConfig, /frame-src[^\n]*https:\/\/www\.youtube-nocookie\.com/);
+  assert.match(netlifyConfig, /frame-src[^\n]*https:\/\/player\.vimeo\.com/);
 });

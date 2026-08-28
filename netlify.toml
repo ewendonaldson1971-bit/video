@@ -22,7 +22,7 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(self), microphone=(self), display-capture=(self), geolocation=()"
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://embed.cloudflarestream.com; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://*.cloudflarestream.com https://i.ytimg.com; media-src 'self' blob: https://*.cloudflarestream.com https://*.videodelivery.net; frame-src https://*.cloudflarestream.com https://www.youtube.com https://player.vimeo.com; connect-src 'self' https://*.cloudflarestream.com https://*.videodelivery.net https://upload.videodelivery.net; frame-ancestors 'self' https://*.vivad.com.au"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://embed.cloudflarestream.com; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://*.cloudflarestream.com https://i.ytimg.com; media-src 'self' blob: https://*.cloudflarestream.com https://*.videodelivery.net; frame-src https://*.cloudflarestream.com https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com; connect-src 'self' https://*.cloudflarestream.com https://*.videodelivery.net https://upload.videodelivery.net; frame-ancestors 'self' https://*.vivad.com.au"
 
 [[redirects]]
   from = "/api/*"
