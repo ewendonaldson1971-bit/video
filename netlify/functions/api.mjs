@@ -62,10 +62,10 @@ function authoritativePlaybackOrigins(request) {
   return allowedOrigins(request);
 }
 
-async function ensureApplicationPlayback(video, request) {
+async function ensureApplicationPlayback(video, request, { force = false } = {}) {
   const current = Array.isArray(video?.allowedOrigins) ? video.allowedOrigins : [];
   const desired = authoritativePlaybackOrigins(request);
-  if (originPoliciesMatch(current, desired)) return { video, repaired: false, repairError: null };
+  if (!force && originPoliciesMatch(current, desired)) return { video, repaired: false, repairError: null };
   try {
     const updated = await cloudflare(`/stream/${video.uid}`, {
       method: "POST",
@@ -270,17 +270,24 @@ async function handler(request) {
     try { claim = verifyToken(decodeURIComponent(publicShareMatch[1]), shareSecret(), { issuer: "vivad-video", audience: "vivad-video-share" }); }
     catch (error) { throw Object.assign(new Error(error.message), { status: 401 }); }
     if (claim.permission !== "watch" || !claim.uid) throw Object.assign(new Error("Invalid video share."), { status: 401 });
-    const video = await getVideo(String(claim.uid));
+    let video = await getVideo(String(claim.uid));
     if (!video.readyToStream) throw Object.assign(new Error("This video is not ready yet."), { status: 409 });
+    const originResult = await ensureApplicationPlayback(video, request);
+    if (originResult.repairError) throw Object.assign(new Error(originResult.repairError), { status: 502 });
+    video = originResult.video;
     return json({ video: publicVideo(video), playback: await createPlayback(video, 1), share: { expiresAt: new Date(claim.exp * 1000).toISOString(), allowDownload: Boolean(claim.download) } });
   }
 
   const publicVideoMatch = path.match(/^\/api\/public\/videos\/([a-zA-Z0-9]{20,64})$/);
   if (publicVideoMatch && request.method === "GET") {
-    const video = await getVideo(publicVideoMatch[1]);
-    const safe = publicVideo(video);
+    let video = await getVideo(publicVideoMatch[1]);
+    let safe = publicVideo(video);
     if (video.requireSignedURLs || safe.visibility !== "public") throw Object.assign(new Error("This video is not public."), { status: 404 });
     if (!video.readyToStream) throw Object.assign(new Error("This video is not ready yet."), { status: 409 });
+    const originResult = await ensureApplicationPlayback(video, request);
+    if (originResult.repairError) throw Object.assign(new Error(originResult.repairError), { status: 502 });
+    video = originResult.video;
+    safe = publicVideo(video);
     const playback = await createPlayback(video, 1);
     const watchUrl = `${applicationOrigin(request)}/?watch=${encodeURIComponent(video.uid)}`;
     return json({ video: safe, playback, publishing: createPublishingBundle({ video: safe.core, watchUrl, iframeUrl: playback.iframeUrl, thumbnailUrl: playback.thumbnailUrl, canonicalUrl: watchUrl }) });
@@ -438,7 +445,7 @@ async function handler(request) {
       scheduleddeletion: privacy.scheduledDeletion,
     };
     const origins = allowedOrigins(request);
-    metadata.allowedorigins = JSON.stringify(origins);
+    if (origins.length) metadata.allowedorigins = JSON.stringify(origins);
 
     const response = await fetch(`${API_ROOT}/accounts/${required("CLOUDFLARE_ACCOUNT_ID")}/stream?direct_user=true`, {
       method: "POST",
@@ -514,11 +521,9 @@ async function handler(request) {
     let video = await getViewableVideo(session, uid);
     const mayManage = ["editor", "admin"].includes(session.role) && canAccessVideo(session, video);
     let playbackOrigin = { repaired: false, repairError: null };
-    if (mayManage) {
-      const originResult = await ensureApplicationPlayback(video, request);
-      video = originResult.video;
-      playbackOrigin = { repaired: originResult.repaired, repairError: originResult.repairError };
-    }
+    const originResult = await ensureApplicationPlayback(video, request);
+    video = originResult.video;
+    playbackOrigin = { repaired: originResult.repaired, repairError: originResult.repairError };
     const playback = video.readyToStream ? await createPlayback(video, 1) : null;
     const safe = publicVideo(video);
     const repository = new VideoRepository();
@@ -696,11 +701,9 @@ async function handler(request) {
   if (action === "origins" && request.method === "POST") {
     requireEditorRole(session);
     const video = await getAuthorisedVideo(session, uid);
-    const updated = await cloudflare(`/stream/${uid}`, {
-      method: "POST",
-      body: JSON.stringify({ uid, allowedOrigins: authoritativePlaybackOrigins(request) }),
-    });
-    return json({ video: publicVideo(updated) });
+    const originResult = await ensureApplicationPlayback(video, request, { force: true });
+    if (originResult.repairError) throw Object.assign(new Error(originResult.repairError), { status: 502 });
+    return json({ video: publicVideo(originResult.video), playbackOrigin: { repaired: true, repairError: null } });
   }
 
   if (action === "captions" && request.method === "POST") {

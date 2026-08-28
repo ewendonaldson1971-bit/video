@@ -705,6 +705,14 @@ async function waitUntilReady(uid) {
     const status = result.video.status;
     if (status?.state === "error") throw new Error(status.errorReasonText || "Cloudflare could not process this video.");
     if (result.video.readyToStream) {
+      const originResult = await api(`/videos/${uid}/origins`, { method: "POST" });
+      state.selected = originResult.video;
+      state.playbackOrigin = originResult.playbackOrigin || { repaired: true, repairError: null };
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const verified = await api(`/videos/${uid}`);
+      state.selected = verified.video;
+      state.playback = verified.playback;
+      state.playbackOrigin = verified.playbackOrigin || state.playbackOrigin;
       showUploadProgress(100, "Ready to edit and share.");
       toast("Video is ready.");
       await loadVideos(false);
