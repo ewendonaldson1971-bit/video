@@ -347,7 +347,8 @@ async function handler(request) {
     const visibleVideos = videos.filter((video) => canDiscoverVideo(session, video));
     const safeVideos = await Promise.all(visibleVideos.map(libraryVideo));
     await catalogueBestEffort("sync", (repository) => repository.syncStreamVideos(safeVideos, session));
-    return json({ videos: safeVideos });
+    const externalVideos = await catalogueBestEffort("external-list", (repository) => repository.listExternal(session)) || [];
+    return json({ videos: [...safeVideos, ...externalVideos].sort((left, right) => Date.parse(right.created || 0) - Date.parse(left.created || 0)) });
   }
 
   if (path === "/api/management" && request.method === "GET") {
@@ -366,6 +367,8 @@ async function handler(request) {
   if (path === "/api/videos/external" && request.method === "POST") {
     requireEditorRole(session);
     const input = await requestBody(request);
+    const name = String(input.name || "").trim();
+    if (!name) throw Object.assign(new Error("Enter a video name before adding the external link."), { status: 400 });
     const external = parseExternalVideoUrl(input.url);
     const record = {
       provider: external.provider,
@@ -373,7 +376,7 @@ async function handler(request) {
       sourceUrl: external.url,
       owner: session.sub,
       creator: creatorFor(session),
-      meta: modelMetadata({ ...input, access: input.access || "link" }),
+      meta: modelMetadata({ ...input, name, access: input.access || "link" }),
       createdAt: new Date().toISOString(),
     };
     return json({ video: await new VideoRepository().saveExternal(record) }, 201);

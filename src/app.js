@@ -443,7 +443,7 @@ function renderUpload() {
         </div>
         <div class="create-source ${state.createMode === "import" ? "" : "hidden"}" data-create-panel="import">
           <div class="tool-card"><h3>Import a direct video-file URL</h3><p class="muted">For an HTTPS media file in R2, S3, GCS or another public host. The host must support HEAD and ranged GET requests.</p><label class="field"><span>Direct file URL</span><input id="direct-import-url" type="url" placeholder="https://example.com/video.mp4"></label><button class="button button-secondary" id="import-direct" type="button">Import to Cloudflare</button></div>
-          <div class="tool-card" style="margin-top:18px"><h3>Add YouTube or Vimeo</h3><p class="muted">Vivad stores an external reference and uses the official provider player. Editing and Cloudflare privacy require the original file.</p><label class="field"><span>Provider URL</span><input id="external-video-url" type="url" placeholder="https://www.youtube.com/watch?v=..."></label><button class="button button-secondary" id="add-external" type="button">Add external reference</button><p class="expiry-note">Requires a configured production video database; audiovisual content is never downloaded.</p></div>
+          <div class="tool-card" style="margin-top:18px"><h3>Add YouTube or Vimeo</h3><p class="muted">Paste the provider link, complete the Video details alongside it, then add the reference to the library.</p><label class="field"><span>Provider URL</span><input id="external-video-url" type="url" placeholder="https://www.youtube.com/watch?v=..." required></label><button class="button button-secondary" id="add-external" type="button">Add to video library</button><p class="expiry-note">The selected access controls discovery inside Vivad. Playback privacy remains controlled by YouTube or Vimeo; audiovisual content is never downloaded.</p></div>
         </div>
         <form id="upload-form">
           ${creationDetails()}
@@ -624,15 +624,19 @@ async function importDirectUrl() {
 }
 
 async function addExternalVideo() {
-  const form = new FormData(document.querySelector("#upload-form"));
+  const formElement = document.querySelector("#upload-form");
+  const urlInput = document.querySelector("#external-video-url");
+  if (!formElement.reportValidity() || !urlInput.reportValidity()) return;
+  const form = new FormData(formElement);
   setBusy(true);
   try {
     const result = await api("/videos/external", { method: "POST", body: JSON.stringify({
-      url: document.querySelector("#external-video-url").value, name: form.get("name"), purpose: form.get("purpose"),
+      url: urlInput.value, name: form.get("name"), purpose: form.get("purpose"),
       description: form.get("description"), access: form.get("uploadVisibility"),
     }) });
     state.selected = result.video;
-    emitHostEvent("video.created", { id: result.video.id, provider: result.video.provider });
+    emitHostEvent("video.created", { uid: result.video.uid, provider: result.video.provider });
+    await loadVideos(false);
     toast("External video reference added.");
     navigate("library");
   } catch (error) { toast(error.message, "error"); }
@@ -810,7 +814,7 @@ function filteredLibraryVideos() {
     if (toTime !== null && (!Number.isFinite(createdTime) || createdTime > toTime)) return false;
     if (!needle) return true;
     const searchable = [
-      video.name, video.description, video.uid, video.purpose, categoryLabel(video.purpose), video.visibility,
+      video.name, video.description, video.uid, video.purpose, categoryLabel(video.purpose), video.visibility, video.provider, video.sourceUrl,
       video.core?.department, video.core?.topic, video.core?.category, video.core?.contentOwner,
       video.core?.version, ...(video.core?.relatedLinks || []),
     ].filter(Boolean).join(" ").toLocaleLowerCase();
@@ -825,12 +829,13 @@ function libraryCard(video, canManageVideos) {
     <article class="video-card ${state.selected?.uid === video.uid ? "selected" : ""}" data-video-id="${escapeHtml(video.uid)}" tabindex="0">
       <div class="video-thumb">
         ${video.thumbnail ? `<img src="${escapeHtml(video.thumbnail)}" alt="" loading="lazy">` : ""}
+        ${video.external ? `<span class="external-provider-badge">${video.provider === "youtube" ? "YouTube" : "Vimeo"}</span>` : ""}
         <span class="play-dot">▶</span>
       </div>
       <div class="video-card-body">
         <h3>${escapeHtml(video.name)}</h3>
         <div class="video-card-metadata"><span>${escapeHtml(categoryLabel(video.purpose))}</span><span>${escapeHtml(formatDate(video.created))}</span></div>
-        <div class="meta-row"><span>${formatTime(video.duration)}</span><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${escapeHtml(statusLabel)}</span></div>
+        <div class="meta-row"><span>${video.external ? "External" : formatTime(video.duration)}</span><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${escapeHtml(statusLabel)}</span></div>
         ${pendingUpload && canManageVideos ? `<button class="button button-danger button-small pending-delete" type="button" data-delete-video-id="${escapeHtml(video.uid)}" data-busy>Delete incomplete upload</button>` : ""}
       </div>
     </article>`;
@@ -1000,6 +1005,21 @@ function playbackAllowedOnCurrentHost(video) {
 async function selectVideo(uid) {
   setBusy(true);
   try {
+    const external = state.videos.find((video) => video.uid === uid && video.external);
+    if (external) {
+      state.selected = external;
+      state.playback = { iframeUrl: external.embedUrl, watchUrl: external.sourceUrl, thumbnailUrl: external.thumbnail };
+      state.playbackOrigin = null;
+      state.permissions = { manage: Boolean(external.canManage) };
+      state.acknowledgement = null;
+      state.acknowledgementReport = null;
+      state.editorCapabilities = {};
+      state.editorDraft = null;
+      state.playbackRequested = true;
+      emitHostEvent("video.selected", { uid, provider: external.provider });
+      navigate("edit");
+      return;
+    }
     const result = await api(`/videos/${uid}`);
     state.selected = result.video;
     state.playback = result.playback;
@@ -1019,6 +1039,38 @@ async function selectVideo(uid) {
     }
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
+}
+
+function renderExternalVideo() {
+  const video = state.selected;
+  const providerName = video.provider === "youtube" ? "YouTube" : "Vimeo";
+  const sourceUrl = safeExternalUrl(video.sourceUrl);
+  document.querySelector("#view").innerHTML = `
+    <section class="panel">
+      <div class="panel-header"><div><p class="eyebrow">External video</p><h2>${escapeHtml(video.name)}</h2></div><span class="badge badge-link">${providerName}</span></div>
+      <div class="panel-body">
+        <div class="editor-layout">
+          <div>
+            <iframe class="player-frame" src="${escapeHtml(video.embedUrl)}" title="${escapeHtml(video.name)}" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+            <div class="status-banner info" style="margin-top:18px"><span>This is an external library reference. Playback and availability are controlled by ${providerName}; Cloudflare editing and Vivad playback restrictions do not apply.</span></div>
+          </div>
+          <aside class="viewer-details">
+            <div class="tool-card">
+              <h3>Video details</h3>
+              <dl class="metadata-list">
+                <div><dt>Category</dt><dd>${escapeHtml(categoryLabel(video.purpose))}</dd></div>
+                <div><dt>Provider</dt><dd>${providerName}</dd></div>
+                <div><dt>Access</dt><dd>${escapeHtml(video.visibility)}</dd></div>
+                <div><dt>Created</dt><dd>${escapeHtml(formatDate(video.created))}</dd></div>
+              </dl>
+              <h4>Description</h4>
+              <p>${escapeHtml(video.description || "No description has been provided.")}</p>
+              ${sourceUrl ? `<a class="button button-secondary" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Open on ${providerName}</a>` : ""}
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>`;
 }
 
 function renderViewer() {
@@ -1103,6 +1155,7 @@ function renderTimelineRows(segments) {
 function renderEditor() {
   const video = state.selected;
   if (!video) return navigate("library");
+  if (video.external) return renderExternalVideo();
   if (!state.permissions?.manage) return renderViewer();
   const draft = ensureEditorDraft(video);
   const duration = Math.max(0.1, video.duration || 0.1);
@@ -1830,6 +1883,25 @@ async function generateDownload(type) {
 function renderShare() {
   const video = state.selected;
   if (!video) return navigate("library");
+  if (video.external) {
+    const providerName = video.provider === "youtube" ? "YouTube" : "Vimeo";
+    document.querySelector("#view").innerHTML = `
+      <section class="panel share-card">
+        <div class="panel-header"><div><p class="eyebrow">Step 04</p><h2>Share external video</h2></div><span class="badge badge-link">${providerName}</span></div>
+        <div class="panel-body">
+          <div class="share-summary">
+            <div class="video-thumb">${video.thumbnail ? `<img src="${escapeHtml(video.thumbnail)}" alt="" loading="lazy">` : ""}<span class="play-dot">▶</span></div>
+            <div><h3>${escapeHtml(video.name)}</h3><p class="muted">${escapeHtml(categoryLabel(video.purpose))} · Created ${escapeHtml(formatDate(video.created))}</p><p class="expiry-note">This link opens the original ${providerName} video. Its availability and privacy are controlled by the provider.</p></div>
+          </div>
+          <button class="button button-primary" id="copy-external-link" type="button">Copy ${providerName} link</button>
+        </div>
+      </section>`;
+    document.querySelector("#copy-external-link").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(video.sourceUrl);
+      toast(`${providerName} link copied.`);
+    });
+    return;
+  }
   const expiry = video.visibility === "public" ? "Public playback is available through this stable watch page." : "The Vivad share page remains stable while each protected playback token is short-lived.";
   document.querySelector("#view").innerHTML = `
     <section class="panel share-card">

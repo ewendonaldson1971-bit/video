@@ -1,4 +1,49 @@
 import { getDatabase } from "@netlify/database";
+import { normaliseAccessPolicy, normalisePurpose } from "./model.mjs";
+
+function externalVideo(row, session = {}) {
+  const meta = row.metadata?.meta || {};
+  const provider = String(row.provider || "").toLowerCase();
+  const providerId = String(row.provider_id || "");
+  const purpose = normalisePurpose(meta.vivadPurpose || row.purpose);
+  const access = normaliseAccessPolicy(meta.vivadAccess || row.visibility || "link");
+  const core = {
+    purpose,
+    access,
+    description: meta.vivadDescription || "",
+    tags: String(meta.vivadTags || "").split(",").map((value) => value.trim()).filter(Boolean),
+    version: meta.vivadVersion || "1",
+    department: meta.vivadDepartment || "",
+    topic: meta.vivadTopic || "",
+    category: meta.vivadCategory || "",
+    contentOwner: meta.vivadOwner || "",
+    reviewDate: meta.vivadReviewDate || null,
+    expiryDate: meta.vivadExpiryDate || null,
+    relatedLinks: String(meta.vivadRelatedLinks || "").split("\n").map((value) => value.trim()).filter(Boolean),
+    requiredAcknowledgement: meta.vivadRequiredAcknowledgement === "true",
+  };
+  return {
+    uid: String(row.uid || `${provider}:${providerId}`),
+    external: true,
+    provider,
+    providerId,
+    sourceUrl: row.source_url,
+    embedUrl: provider === "youtube" ? `https://www.youtube-nocookie.com/embed/${providerId}` : `https://player.vimeo.com/video/${providerId}`,
+    thumbnail: provider === "youtube" ? `https://i.ytimg.com/vi/${providerId}/hqdefault.jpg` : null,
+    name: meta.name || row.title || "External video",
+    description: meta.vivadDescription || "",
+    purpose,
+    visibility: access,
+    access,
+    duration: 0,
+    created: row.created_at,
+    modified: row.updated_at,
+    readyToStream: true,
+    status: { state: "ready", pctComplete: "100" },
+    canManage: session.role === "admin" || String(row.owner_id) === String(session.sub),
+    core,
+  };
+}
 
 export function videoDatabaseConfigured(env = process.env) {
   return Boolean(env.VIDEO_DATABASE_URL || env.NETLIFY_DB_URL);
@@ -105,7 +150,34 @@ export class VideoRepository {
     const uid = `${record.provider}:${record.providerId}`;
     await this.upsertRecords([{ uid, ...record, title: record.meta?.name, purpose: record.meta?.vivadPurpose, visibility: record.meta?.vivadAccess, status: "external", ready: true, metadata: { meta: record.meta } }]);
     await this.recordEvent({ uid, eventType: "external.created", session: { sub: record.owner, app: "standalone" }, details: { provider: record.provider } });
-    return { uid, external: true, provider: record.provider, providerId: record.providerId, sourceUrl: record.sourceUrl, name: record.meta?.name || "External video", purpose: record.meta?.vivadPurpose || "general", visibility: record.meta?.vivadAccess || "link", readyToStream: true };
+    return externalVideo({
+      uid,
+      provider: record.provider,
+      provider_id: record.providerId,
+      owner_id: record.owner,
+      source_url: record.sourceUrl,
+      title: record.meta?.name,
+      purpose: record.meta?.vivadPurpose,
+      visibility: record.meta?.vivadAccess,
+      metadata: { meta: record.meta },
+      created_at: record.createdAt,
+      updated_at: record.createdAt,
+    }, { sub: record.owner, role: "editor" });
+  }
+
+  async listExternal(session = {}) {
+    const administrator = session.role === "admin";
+    const parameters = administrator ? [] : [String(session.sub)];
+    const { rows } = await this.client().pool.query(`
+      SELECT uid, provider, provider_id, owner_id, source_url, title, purpose, visibility, metadata, created_at, updated_at
+      FROM vivad_video_records
+      WHERE provider IN ('youtube', 'vimeo')
+        AND deleted_at IS NULL
+        ${administrator ? "" : "AND (owner_id = $1 OR visibility IN ('public', 'organisation'))"}
+      ORDER BY created_at DESC
+      LIMIT 250
+    `, parameters);
+    return rows.map((row) => externalVideo(row, session));
   }
 
   async recordEvent({ uid, eventType, session = {}, details = {} }) {

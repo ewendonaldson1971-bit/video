@@ -40,6 +40,8 @@ test("model metadata preserves existing values and sanitises lengths", () => {
 
 test("external URLs accept official providers without downloading content", () => {
   assert.deepEqual(parseExternalVideoUrl("https://youtu.be/dQw4w9WgXcQ"), { provider: "youtube", providerId: "dQw4w9WgXcQ", url: "https://youtu.be/dQw4w9WgXcQ" });
+  assert.equal(parseExternalVideoUrl("https://www.youtube.com/live/dQw4w9WgXcQ").providerId, "dQw4w9WgXcQ");
+  assert.equal(parseExternalVideoUrl("https://music.youtube.com/watch?v=dQw4w9WgXcQ").provider, "youtube");
   assert.equal(parseExternalVideoUrl("https://vimeo.com/123456789").providerId, "123456789");
   assert.throws(() => parseExternalVideoUrl("https://example.com/watch?v=dQw4w9WgXcQ"), /official/);
 });

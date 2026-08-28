@@ -206,6 +206,7 @@ textarea { min-height: 110px; resize: vertical; }
 .video-card.selected { border-color: var(--vivad-blue); box-shadow: 0 0 0 3px rgba(71, 143, 225, 0.16); }
 .video-thumb { aspect-ratio: 16 / 9; background: linear-gradient(135deg, #53565a, #24262a); position: relative; display: grid; place-items: center; overflow: hidden; }
 .video-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.external-provider-badge { position: absolute; z-index: 1; top: 10px; left: 10px; border-radius: 99px; padding: 5px 9px; color: #fff; background: rgba(36, 38, 42, 0.82); font-size: 0.72rem; font-weight: 700; }
 .play-dot { position: absolute; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,0.9); color: var(--vivad-blue); box-shadow: var(--shadow-control); }
 .video-card-body { padding: 15px; }
 .video-card-metadata { display: flex; justify-content: space-between; gap: 10px; margin: 7px 0 12px; color: var(--vivad-muted); font-size: 0.74rem; }

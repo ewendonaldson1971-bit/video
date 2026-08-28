@@ -71,9 +71,9 @@ export function parseExternalVideoUrl(value) {
   if (host === "youtu.be") {
     provider = "youtube";
     providerId = url.pathname.split("/").filter(Boolean)[0];
-  } else if (["youtube.com", "m.youtube.com"].includes(host)) {
+  } else if (["youtube.com", "m.youtube.com", "music.youtube.com"].includes(host)) {
     provider = "youtube";
-    providerId = url.pathname.startsWith("/shorts/") || url.pathname.startsWith("/embed/")
+    providerId = url.pathname.startsWith("/shorts/") || url.pathname.startsWith("/embed/") || url.pathname.startsWith("/live/")
       ? url.pathname.split("/")[2]
       : url.searchParams.get("v");
   } else if (host === "vimeo.com" || host === "player.vimeo.com") {

@@ -36,6 +36,29 @@ test("video catalogue bulk sync stores workflow metadata without video bytes", a
   assert.equal("video" in stored[0], false);
 });
 
+test("external video references are returned as playable library records with details", async () => {
+  const database = { pool: { query: async () => ({ rows: [{
+    uid: "youtube:dQw4w9WgXcQ",
+    provider: "youtube",
+    provider_id: "dQw4w9WgXcQ",
+    owner_id: "user-1",
+    source_url: "https://youtu.be/dQw4w9WgXcQ",
+    title: "Installation guide",
+    purpose: "training",
+    visibility: "organisation",
+    metadata: { meta: { name: "Installation guide", vivadPurpose: "training", vivadAccess: "organisation", vivadDescription: "How to install it." } },
+    created_at: "2026-08-29T00:00:00.000Z",
+    updated_at: "2026-08-29T00:00:00.000Z",
+  }] }) } };
+  const [video] = await new VideoRepository({}, database).listExternal({ sub: "user-1", role: "editor" });
+  assert.equal(video.uid, "youtube:dQw4w9WgXcQ");
+  assert.equal(video.embedUrl, "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
+  assert.equal(video.thumbnail, "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg");
+  assert.equal(video.description, "How to install it.");
+  assert.equal(video.purpose, "training");
+  assert.equal(video.canManage, true);
+});
+
 test("acknowledgements are version-specific and idempotent", async () => {
   const queries = [];
   const acknowledgement = { video_uid: "video123", user_id: "user@example.com", video_version: "2", acknowledged_at: "2026-08-27T00:00:00.000Z" };
