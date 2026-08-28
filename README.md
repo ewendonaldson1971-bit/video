@@ -19,7 +19,7 @@ iRedMail SMTP credentials stored in Netlify environment variables for delivery.
 - Standalone email/password authentication through the same service used by SAV Builder
 - Short-lived signed sessions for SPARK, Lotus and other host apps
 - `postMessage` lifecycle events for embedded integrations
-- Purpose templates for website, training, SOP, internal, client and general video
+- Category templates for website, training, SOP, internal, client, testing and general video
 - Seven audience policies, including unlisted, organisation, team and client sharing
 - Browser camera, screen, screen-plus-camera and audio recording
 - Protected direct video-file URL imports through Cloudflare Stream

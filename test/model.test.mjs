@@ -12,6 +12,7 @@ import {
 
 test("purpose templates supply reusable conservative defaults", () => {
   assert.deepEqual(purposeDefaults("website"), { purpose: "website", label: "Website content", access: "public", reviewStatus: "draft", indexable: true });
+  assert.deepEqual(purposeDefaults("testing"), { purpose: "testing", label: "Testing", access: "organisation", reviewStatus: "draft", indexable: false });
   assert.equal(purposeDefaults("unknown").purpose, "general");
 });
 

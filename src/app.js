@@ -5,6 +5,15 @@ const app = document.querySelector("#app");
 const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get("demo") === "1";
 const demoRole = new URLSearchParams(location.search).get("role") === "viewer" ? "viewer" : "admin";
 const demoOriginMismatch = demoMode && new URLSearchParams(location.search).get("origin-test") === "1";
+const CATEGORY_OPTIONS = [
+  ["website", "Website content"],
+  ["training", "Training"],
+  ["sop", "SOP"],
+  ["internal", "Internal update"],
+  ["client", "Client message"],
+  ["testing", "Testing"],
+  ["general", "General video"],
+];
 const state = {
   token: sessionStorage.getItem("vivadVideoSession") || "",
   session: null,
@@ -12,6 +21,7 @@ const state = {
   loginEmail: "",
   section: "upload",
   videos: [],
+  libraryFilters: { query: "", category: "all", createdFrom: "", createdTo: "" },
   management: null,
   selected: null,
   permissions: null,
@@ -378,19 +388,22 @@ function visibilityOptions(current = "expiring", prefix = "visibility") {
     </div>`;
 }
 
-function purposeOptions(current = "general") {
-  return `<label class="field"><span>Purpose</span><select name="purpose">
-    ${[["website", "Website content"], ["training", "Training"], ["sop", "SOP"], ["internal", "Internal update"], ["client", "Client message"], ["general", "General video"]]
-      .map(([value, label]) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`).join("")}
+function categoryLabel(value) {
+  return CATEGORY_OPTIONS.find(([option]) => option === value)?.[1] || "General video";
+}
+
+function categoryOptions(current = "general") {
+  return `<label class="field"><span>Category</span><select name="purpose">
+    ${CATEGORY_OPTIONS.map(([value, label]) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`).join("")}
   </select></label>`;
 }
 
 function creationDetails(title = "Video details") {
   const initialPurpose = state.session?.purpose || "general";
-  const initialAccess = { website: "public", training: "organisation", sop: "organisation", internal: "organisation", client: "client", general: "link" }[initialPurpose] || "link";
+  const initialAccess = { website: "public", training: "organisation", sop: "organisation", internal: "organisation", client: "client", testing: "organisation", general: "link" }[initialPurpose] || "link";
   return `<div class="creation-details"><h3>${title}</h3>
     <label class="field"><span>Video name</span><input name="name" value="${escapeHtml(state.file?.name || "")}" placeholder="Customer video" required></label>
-    ${purposeOptions(initialPurpose)}
+    ${categoryOptions(initialPurpose)}
     <label class="field"><span>Description</span><textarea name="description" placeholder="What this video covers"></textarea></label>
     <span class="field-label">Access</span>${visibilityOptions(initialAccess, "uploadVisibility")}
     <label class="field hidden" id="upload-retention" style="margin-top:14px"><span>Delete automatically after</span><select name="temporaryDays"><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
@@ -785,13 +798,30 @@ async function loadVideos(render = true) {
   }
 }
 
-function renderLibrary() {
-  const canManageVideos = ["editor", "admin"].includes(state.session?.role);
-  const abandonedUploads = state.videos.filter(isAbandonedUpload);
-  const cards = state.videos.map((video) => {
-    const pendingUpload = String(video.status?.state || "").toLowerCase() === "pendingupload";
-    const statusLabel = video.readyToStream ? video.visibility : isAbandonedUpload(video) ? "Abandoned upload" : pendingUpload ? "Pending upload" : video.status?.state || "processing";
-    return `
+function filteredLibraryVideos() {
+  const { query, category, createdFrom, createdTo } = state.libraryFilters;
+  const needle = query.trim().toLocaleLowerCase();
+  const fromTime = createdFrom ? new Date(`${createdFrom}T00:00:00`).getTime() : null;
+  const toTime = createdTo ? new Date(`${createdTo}T23:59:59.999`).getTime() : null;
+  return state.videos.filter((video) => {
+    if (category !== "all" && video.purpose !== category) return false;
+    const createdTime = Date.parse(video.created || "");
+    if (fromTime !== null && (!Number.isFinite(createdTime) || createdTime < fromTime)) return false;
+    if (toTime !== null && (!Number.isFinite(createdTime) || createdTime > toTime)) return false;
+    if (!needle) return true;
+    const searchable = [
+      video.name, video.description, video.uid, video.purpose, categoryLabel(video.purpose), video.visibility,
+      video.core?.department, video.core?.topic, video.core?.category, video.core?.contentOwner,
+      video.core?.version, ...(video.core?.relatedLinks || []),
+    ].filter(Boolean).join(" ").toLocaleLowerCase();
+    return searchable.includes(needle);
+  });
+}
+
+function libraryCard(video, canManageVideos) {
+  const pendingUpload = String(video.status?.state || "").toLowerCase() === "pendingupload";
+  const statusLabel = video.readyToStream ? video.visibility : isAbandonedUpload(video) ? "Abandoned upload" : pendingUpload ? "Pending upload" : video.status?.state || "processing";
+  return `
     <article class="video-card ${state.selected?.uid === video.uid ? "selected" : ""}" data-video-id="${escapeHtml(video.uid)}" tabindex="0">
       <div class="video-thumb">
         ${video.thumbnail ? `<img src="${escapeHtml(video.thumbnail)}" alt="" loading="lazy">` : ""}
@@ -799,18 +829,14 @@ function renderLibrary() {
       </div>
       <div class="video-card-body">
         <h3>${escapeHtml(video.name)}</h3>
+        <div class="video-card-metadata"><span>${escapeHtml(categoryLabel(video.purpose))}</span><span>${escapeHtml(formatDate(video.created))}</span></div>
         <div class="meta-row"><span>${formatTime(video.duration)}</span><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${escapeHtml(statusLabel)}</span></div>
         ${pendingUpload && canManageVideos ? `<button class="button button-danger button-small pending-delete" type="button" data-delete-video-id="${escapeHtml(video.uid)}" data-busy>Delete incomplete upload</button>` : ""}
       </div>
     </article>`;
-  }).join("");
-  document.querySelector("#view").innerHTML = `
-    <section class="panel">
-      <div class="panel-header"><div><p class="eyebrow">Step 02</p><h2>Video library</h2></div><div class="library-summary"><span class="muted">${state.videos.length} video${state.videos.length === 1 ? "" : "s"}</span>${abandonedUploads.length && canManageVideos ? `<button class="button button-danger button-small" type="button" id="cleanup-abandoned" data-busy>Remove ${abandonedUploads.length} abandoned upload${abandonedUploads.length === 1 ? "" : "s"}</button>` : ""}</div></div>
-      <div class="panel-body">${cards ? `<div class="video-grid">${cards}</div>` : `<div class="empty-state"><div><div class="upload-icon">□</div><h3>No videos yet</h3><p>Upload the first video to begin.</p><button class="button button-primary" data-go-upload>Upload video</button></div></div>`}</div>
-    </section>`;
-  document.querySelector("[data-go-upload]")?.addEventListener("click", () => navigate("upload"));
-  document.querySelector("#cleanup-abandoned")?.addEventListener("click", () => cleanupAbandonedUploads(abandonedUploads));
+}
+
+function bindLibraryCards() {
   document.querySelectorAll("[data-delete-video-id]").forEach((button) => button.addEventListener("click", (event) => {
     event.stopPropagation();
     deleteVideo(state.videos.find((video) => video.uid === button.dataset.deleteVideoId));
@@ -820,6 +846,62 @@ function renderLibrary() {
     card.addEventListener("click", choose);
     card.addEventListener("keydown", (event) => { if (event.target === card && (event.key === "Enter" || event.key === " ")) choose(); });
   });
+}
+
+function renderLibraryResults() {
+  const results = document.querySelector("#library-results");
+  if (!results) return;
+  const canManageVideos = ["editor", "admin"].includes(state.session?.role);
+  const videos = filteredLibraryVideos();
+  const hasFilters = Boolean(state.libraryFilters.query || state.libraryFilters.category !== "all" || state.libraryFilters.createdFrom || state.libraryFilters.createdTo);
+  const summary = document.querySelector("#library-result-count");
+  if (summary) summary.textContent = hasFilters ? `${videos.length} of ${state.videos.length} videos` : `${state.videos.length} video${state.videos.length === 1 ? "" : "s"}`;
+  document.querySelector("#clear-library-filters")?.classList.toggle("hidden", !hasFilters);
+  if (videos.length) results.innerHTML = `<div class="video-grid">${videos.map((video) => libraryCard(video, canManageVideos)).join("")}</div>`;
+  else if (state.videos.length) results.innerHTML = `<div class="empty-state"><div><div class="upload-icon">⌕</div><h3>No videos match these filters</h3><p>Change or clear the filters to see more videos.</p><button class="button button-secondary" id="clear-library-empty" type="button">Clear filters</button></div></div>`;
+  else results.innerHTML = `<div class="empty-state"><div><div class="upload-icon">□</div><h3>No videos yet</h3><p>Upload the first video to begin.</p><button class="button button-primary" data-go-upload>Upload video</button></div></div>`;
+  document.querySelector("[data-go-upload]")?.addEventListener("click", () => navigate("upload"));
+  document.querySelector("#clear-library-empty")?.addEventListener("click", clearLibraryFilters);
+  bindLibraryCards();
+}
+
+function clearLibraryFilters() {
+  state.libraryFilters = { query: "", category: "all", createdFrom: "", createdTo: "" };
+  const query = document.querySelector("#library-search");
+  const category = document.querySelector("#library-category");
+  const from = document.querySelector("#library-created-from");
+  const to = document.querySelector("#library-created-to");
+  if (query) query.value = "";
+  if (category) category.value = "all";
+  if (from) from.value = "";
+  if (to) to.value = "";
+  renderLibraryResults();
+}
+
+function renderLibrary() {
+  const canManageVideos = ["editor", "admin"].includes(state.session?.role);
+  const abandonedUploads = state.videos.filter(isAbandonedUpload);
+  document.querySelector("#view").innerHTML = `
+    <section class="panel">
+      <div class="panel-header"><div><p class="eyebrow">Step 02</p><h2>Video library</h2></div><div class="library-summary"><span class="muted" id="library-result-count"></span>${abandonedUploads.length && canManageVideos ? `<button class="button button-danger button-small" type="button" id="cleanup-abandoned" data-busy>Remove ${abandonedUploads.length} abandoned upload${abandonedUploads.length === 1 ? "" : "s"}</button>` : ""}</div></div>
+      <div class="panel-body">
+        <div class="library-filters" role="search" aria-label="Filter video library">
+          <label class="field library-search"><span>Search videos</span><input id="library-search" type="search" value="${escapeHtml(state.libraryFilters.query)}" placeholder="Name, description or other text"></label>
+          <label class="field"><span>Category</span><select id="library-category"><option value="all">All categories</option>${CATEGORY_OPTIONS.map(([value, label]) => `<option value="${value}" ${state.libraryFilters.category === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+          <label class="field"><span>Created from</span><input id="library-created-from" type="date" value="${escapeHtml(state.libraryFilters.createdFrom)}"></label>
+          <label class="field"><span>Created to</span><input id="library-created-to" type="date" value="${escapeHtml(state.libraryFilters.createdTo)}"></label>
+          <button class="button button-quiet button-small" id="clear-library-filters" type="button">Clear filters</button>
+        </div>
+        <div id="library-results"></div>
+      </div>
+    </section>`;
+  document.querySelector("#library-search").addEventListener("input", (event) => { state.libraryFilters.query = event.currentTarget.value; renderLibraryResults(); });
+  document.querySelector("#library-category").addEventListener("change", (event) => { state.libraryFilters.category = event.currentTarget.value; renderLibraryResults(); });
+  document.querySelector("#library-created-from").addEventListener("change", (event) => { state.libraryFilters.createdFrom = event.currentTarget.value; renderLibraryResults(); });
+  document.querySelector("#library-created-to").addEventListener("change", (event) => { state.libraryFilters.createdTo = event.currentTarget.value; renderLibraryResults(); });
+  document.querySelector("#clear-library-filters").addEventListener("click", clearLibraryFilters);
+  document.querySelector("#cleanup-abandoned")?.addEventListener("click", () => cleanupAbandonedUploads(abandonedUploads));
+  renderLibraryResults();
 }
 
 function uploadState(video) {
@@ -947,7 +1029,7 @@ function renderViewer() {
   const links = (video.core?.relatedLinks || []).map(safeExternalUrl).filter(Boolean);
   const chapters = video.core?.chapters || [];
   const metadata = [
-    ["Purpose", video.purpose], ["Version", video.core?.version || "1"], ["Owner", video.core?.contentOwner],
+    ["Category", categoryLabel(video.purpose)], ["Version", video.core?.version || "1"], ["Owner", video.core?.contentOwner],
     ["Department", video.core?.department], ["Topic", video.core?.topic], ["Review date", video.core?.reviewDate ? formatDate(video.core.reviewDate) : ""],
   ].filter(([, value]) => value);
   document.querySelector("#view").innerHTML = `
@@ -1103,7 +1185,7 @@ function renderEditor() {
             <div class="tool-card">
               <h3>Video details</h3>
               <label class="field"><span>Name</span><input id="edit-name" value="${escapeHtml(video.name)}"></label>
-              ${purposeOptions(video.purpose || "general").replace('name="purpose"', 'id="edit-purpose" name="purpose"')}
+              ${categoryOptions(video.purpose || "general").replace('name="purpose"', 'id="edit-purpose" name="purpose"')}
               <label class="field"><span>Description</span><textarea id="edit-description">${escapeHtml(video.description || "")}</textarea></label>
               <span class="field-label">Access</span>
               ${visibilityOptions(video.visibility, "editVisibility")}
@@ -1290,7 +1372,7 @@ function bindEditor(duration) {
     markSettingsDirty("Thumbnail changed. Save changes to apply it.");
   });
   document.querySelector("#edit-name").addEventListener("input", () => markSettingsDirty("Name changed. Save changes to apply it."));
-  document.querySelector("#edit-purpose").addEventListener("change", () => markSettingsDirty("Purpose changed. Save changes to apply it."));
+  document.querySelector("#edit-purpose").addEventListener("change", () => markSettingsDirty("Category changed. Save changes to apply it."));
   document.querySelector("#edit-description").addEventListener("input", () => markSettingsDirty("Description changed. Save changes to apply it."));
   ["edit-department", "edit-topic", "edit-category", "edit-owner", "edit-version", "edit-review-date", "edit-expiry-date", "edit-related-links", "edit-acknowledgement"].forEach((id) => {
     document.querySelector(`#${id}`).addEventListener(id === "edit-acknowledgement" || id.includes("date") ? "change" : "input", () => markSettingsDirty("Workflow metadata changed. Save changes to apply it."));

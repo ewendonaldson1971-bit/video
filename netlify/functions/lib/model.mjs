@@ -1,6 +1,6 @@
 import { normaliseChapters, parseStoredChapters } from "./editing.mjs";
 
-const PURPOSES = new Set(["website", "training", "sop", "internal", "client", "general"]);
+const PURPOSES = new Set(["website", "training", "sop", "internal", "client", "testing", "general"]);
 const ACCESS_POLICIES = new Set(["public", "link", "organisation", "team", "client", "expiring", "temporary"]);
 
 export const PURPOSE_TEMPLATES = Object.freeze({
@@ -9,6 +9,7 @@ export const PURPOSE_TEMPLATES = Object.freeze({
   sop: { label: "SOP", access: "organisation", reviewStatus: "draft", indexable: false },
   internal: { label: "Internal update", access: "organisation", reviewStatus: "draft", indexable: false },
   client: { label: "Client message", access: "client", reviewStatus: "draft", indexable: false },
+  testing: { label: "Testing", access: "organisation", reviewStatus: "draft", indexable: false },
   general: { label: "General video", access: "link", reviewStatus: "draft", indexable: false },
 });
 
