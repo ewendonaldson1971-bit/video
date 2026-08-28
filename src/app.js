@@ -8,6 +8,8 @@ const demoOriginMismatch = demoMode && new URLSearchParams(location.search).get(
 const state = {
   token: sessionStorage.getItem("vivadVideoSession") || "",
   session: null,
+  sessionRenewalTimer: null,
+  loginEmail: "",
   section: "upload",
   videos: [],
   management: null,
@@ -151,7 +153,15 @@ async function api(path, options = {}) {
     },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(payload.error || `Request failed (${response.status}).`);
+    error.status = response.status;
+    if (response.status === 401 && state.token) {
+      error.sessionExpired = true;
+      handleExpiredSession();
+    }
+    throw error;
+  }
   return payload;
 }
 
@@ -197,7 +207,7 @@ function renderLogin(error = "") {
         <form id="login-form" style="margin-top:26px">
           <label class="field">
             <span>Email address</span>
-            <input type="email" name="email" autocomplete="username" required autofocus>
+            <input type="email" name="email" autocomplete="username" value="${escapeHtml(state.loginEmail)}" required autofocus>
           </label>
           <label class="field">
             <span>Password</span>
@@ -213,6 +223,7 @@ function renderLogin(error = "") {
 async function login(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  state.loginEmail = String(form.get("email") || "").trim();
   setBusy(true);
   try {
     const result = await fetch("/api/session/login", {
@@ -236,14 +247,49 @@ async function login(event) {
 function acceptSession(result) {
   state.token = result.token;
   state.session = result.session;
+  state.loginEmail = result.session?.email || state.loginEmail;
   sessionStorage.setItem("vivadVideoSession", state.token);
+  scheduleSessionRenewal();
 }
 
 function logout() {
+  clearInterval(state.sessionRenewalTimer);
+  state.sessionRenewalTimer = null;
   state.token = "";
   state.session = null;
   sessionStorage.removeItem("vivadVideoSession");
   renderLogin();
+}
+
+function handleExpiredSession() {
+  if (!state.token) return;
+  const embedded = state.session?.mode === "embedded";
+  state.loginEmail = state.session?.email || state.loginEmail;
+  sessionStorage.setItem("vivadVideoReturnAfterLogin", JSON.stringify({
+    section: state.section,
+    uid: state.selected?.uid || null,
+  }));
+  clearInterval(state.sessionRenewalTimer);
+  state.sessionRenewalTimer = null;
+  state.token = "";
+  state.session = null;
+  sessionStorage.removeItem("vivadVideoSession");
+  renderLogin(embedded
+    ? "Your embedded Vivad Video session expired. Reopen Vivad Video from the host app."
+    : "Your Vivad Video session expired. Sign in again to continue where you left off.");
+}
+
+function scheduleSessionRenewal() {
+  clearInterval(state.sessionRenewalTimer);
+  state.sessionRenewalTimer = null;
+  if (demoMode || !state.token) return;
+  state.sessionRenewalTimer = setInterval(async () => {
+    try {
+      acceptSession(await api("/session"));
+    } catch (error) {
+      if (!error.sessionExpired) console.warn("Vivad Video session renewal failed.", error);
+    }
+  }, 4 * 60 * 60 * 1000);
 }
 
 function shell() {
@@ -734,7 +780,7 @@ async function loadVideos(render = true) {
     if (render && state.section === "library") renderLibrary();
     return true;
   } catch (error) {
-    toast(error.message, "error");
+    if (!error.sessionExpired) toast(error.message, "error");
     return false;
   }
 }
@@ -1823,6 +1869,17 @@ async function sendEmail(event) {
 async function startApp() {
   shell();
   await loadVideos(false);
+  if (!state.token) return;
+  let returnAfterLogin = null;
+  try { returnAfterLogin = JSON.parse(sessionStorage.getItem("vivadVideoReturnAfterLogin") || "null"); } catch { /* Ignore damaged browser state. */ }
+  sessionStorage.removeItem("vivadVideoReturnAfterLogin");
+  if (returnAfterLogin?.uid && state.videos.some((video) => video.uid === returnAfterLogin.uid)) {
+    try { await selectVideo(returnAfterLogin.uid); return; } catch { /* Fall back to the saved section. */ }
+  }
+  if (["upload", "library", "edit", "share", "manage"].includes(returnAfterLogin?.section)) {
+    navigate(returnAfterLogin.section);
+    return;
+  }
   const requestedVideo = new URLSearchParams(location.search).get("videoId");
   if (requestedVideo) {
     try { await selectVideo(requestedVideo); return; } catch { /* Fall back to upload. */ }
@@ -1900,11 +1957,23 @@ async function initialise() {
   if (state.token) {
     try {
       const result = await api("/session");
-      state.session = result.session;
+      acceptSession(result);
       return startApp();
-    } catch { logout(); return; }
+    } catch (error) {
+      if (!error.sessionExpired) logout();
+      return;
+    }
   }
   renderLogin();
 }
+
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState !== "visible" || demoMode || !state.token) return;
+  try {
+    acceptSession(await api("/session"));
+  } catch (error) {
+    if (!error.sessionExpired) console.warn("Vivad Video session check failed.", error);
+  }
+});
 
 initialise();

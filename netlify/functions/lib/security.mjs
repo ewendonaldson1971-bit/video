@@ -70,7 +70,8 @@ export function requireSession(request) {
 }
 
 export function createSession(payload) {
-  return signToken(payload, process.env.SESSION_SIGNING_SECRET, {
+  const { iat, exp, iss, aud, nbf, ...identity } = payload || {};
+  return signToken(identity, process.env.SESSION_SIGNING_SECRET, {
     audience: "vivad-video-session",
     expiresInSeconds: 8 * 60 * 60,
   });

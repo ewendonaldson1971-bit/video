@@ -337,7 +337,7 @@ async function handler(request) {
 
   const session = requireSession(request);
 
-  if (path === "/api/session" && request.method === "GET") return json({ session });
+  if (path === "/api/session" && request.method === "GET") return json({ session, token: createSession(session) });
 
   if (path === "/api/videos" && request.method === "GET") {
     const url = new URL(request.url);
