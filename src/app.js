@@ -748,7 +748,7 @@ function renderLibrary() {
     return `
     <article class="video-card ${state.selected?.uid === video.uid ? "selected" : ""}" data-video-id="${escapeHtml(video.uid)}" tabindex="0">
       <div class="video-thumb">
-        ${video.thumbnail && video.visibility === "public" ? `<img src="${escapeHtml(video.thumbnail)}" alt="">` : ""}
+        ${video.thumbnail ? `<img src="${escapeHtml(video.thumbnail)}" alt="" loading="lazy">` : ""}
         <span class="play-dot">▶</span>
       </div>
       <div class="video-card-body">
@@ -1708,7 +1708,7 @@ function renderShare() {
       <div class="panel-header"><div><p class="eyebrow">Step 04</p><h2>Share video</h2></div><span class="badge badge-${video.visibility}">${video.visibility}</span></div>
       <div class="panel-body">
         <div class="share-summary">
-          <div class="video-thumb">${video.thumbnail && video.visibility === "public" ? `<img src="${escapeHtml(video.thumbnail)}" alt="">` : ""}<span class="play-dot">▶</span></div>
+          <div class="video-thumb">${video.thumbnail ? `<img src="${escapeHtml(video.thumbnail)}" alt="" loading="lazy">` : ""}<span class="play-dot">▶</span></div>
           <div><h3>${escapeHtml(video.name)}</h3><p class="muted">${formatTime(video.duration)} · Created ${formatDate(video.created)}</p><p class="expiry-note">${expiry}</p></div>
         </div>
         <div class="grid-equal">

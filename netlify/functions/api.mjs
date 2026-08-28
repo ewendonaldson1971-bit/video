@@ -187,6 +187,20 @@ async function createPlayback(video, hours = 1, tokenOptions = {}) {
   };
 }
 
+async function libraryVideo(video) {
+  const safe = publicVideo(video);
+  if (!video.readyToStream || !video.requireSignedURLs) return safe;
+  try {
+    const playback = await createPlayback(video, 1);
+    safe.thumbnail = playback.thumbnailUrl;
+    safe.thumbnailExpiresAt = playback.expiresAt;
+  } catch (error) {
+    console.warn(JSON.stringify({ event: "video.library-thumbnail.failed", uid: video.uid, message: error.message }));
+    safe.thumbnail = null;
+  }
+  return safe;
+}
+
 function routePath(url) {
   const pathname = new URL(url).pathname;
   const functionPrefix = "/.netlify/functions/api";
@@ -331,7 +345,7 @@ async function handler(request) {
     if (url.searchParams.get("search")) query.set("search", url.searchParams.get("search").slice(0, 100));
     const videos = normaliseVideoList(await cloudflare(`/stream?${query}`));
     const visibleVideos = videos.filter((video) => canDiscoverVideo(session, video));
-    const safeVideos = visibleVideos.map(publicVideo);
+    const safeVideos = await Promise.all(visibleVideos.map(libraryVideo));
     await catalogueBestEffort("sync", (repository) => repository.syncStreamVideos(safeVideos, session));
     return json({ videos: safeVideos });
   }
