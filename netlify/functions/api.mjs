@@ -345,7 +345,10 @@ async function handler(request) {
     if (url.searchParams.get("search")) query.set("search", url.searchParams.get("search").slice(0, 100));
     const videos = normaliseVideoList(await cloudflare(`/stream?${query}`));
     const visibleVideos = videos.filter((video) => canDiscoverVideo(session, video));
-    const safeVideos = await Promise.all(visibleVideos.map(libraryVideo));
+    const safeVideos = await Promise.all(visibleVideos.map(async (video) => ({
+      ...(await libraryVideo(video)),
+      canManage: canAccessVideo(session, video),
+    })));
     await catalogueBestEffort("sync", (repository) => repository.syncStreamVideos(safeVideos, session));
     const externalVideos = await catalogueBestEffort("external-list", (repository) => repository.listExternal(session)) || [];
     return json({ videos: [...safeVideos, ...externalVideos].sort((left, right) => Date.parse(right.created || 0) - Date.parse(left.created || 0)) });

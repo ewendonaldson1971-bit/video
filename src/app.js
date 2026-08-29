@@ -442,7 +442,7 @@ function renderUpload() {
           </div>
         </div>
         <div class="create-source ${state.createMode === "import" ? "" : "hidden"}" data-create-panel="import">
-          <div class="tool-card"><h3>Import a direct video-file URL</h3><p class="muted">For an HTTPS media file in R2, S3, GCS or another public host. The host must support HEAD and ranged GET requests.</p><label class="field"><span>Direct file URL</span><input id="direct-import-url" type="url" placeholder="https://example.com/video.mp4"></label><button class="button button-secondary" id="import-direct" type="button">Import to Cloudflare</button></div>
+          <div class="tool-card"><h3>Import a direct video-file URL</h3><p class="muted">For an HTTPS media file in R2, S3, GCS or another public host. The URL must return the video file itself—not a webpage or file-sharing preview—and support ranged GET requests.</p><label class="field"><span>Direct file URL</span><input id="direct-import-url" type="url" placeholder="https://example.com/video.mp4" required></label><button class="button button-secondary" id="import-direct" type="button">Import to Cloudflare</button><p class="expiry-note">YouTube, Vimeo and other video webpages belong in “Add YouTube or Vimeo” below.</p></div>
           <div class="tool-card" style="margin-top:18px"><h3>Add YouTube or Vimeo</h3><p class="muted">Paste the provider link, complete the Video details alongside it, then add the reference to the library.</p><label class="field"><span>Provider URL</span><input id="external-video-url" type="url" placeholder="https://www.youtube.com/watch?v=..." required></label><button class="button button-secondary" id="add-external" type="button">Add to video library</button><p class="expiry-note">The selected access controls discovery inside Vivad. Playback privacy remains controlled by YouTube or Vimeo; audiovisual content is never downloaded.</p></div>
         </div>
         <form id="upload-form">
@@ -606,8 +606,11 @@ function finishRecording() {
 }
 
 async function importDirectUrl() {
-  const form = new FormData(document.querySelector("#upload-form"));
-  const url = document.querySelector("#direct-import-url").value;
+  const formElement = document.querySelector("#upload-form");
+  const urlInput = document.querySelector("#direct-import-url");
+  if (!formElement.reportValidity() || !urlInput.reportValidity()) return;
+  const form = new FormData(formElement);
+  const url = urlInput.value;
   setBusy(true);
   try {
     const result = await api("/imports/direct", { method: "POST", body: JSON.stringify({
@@ -823,8 +826,14 @@ function filteredLibraryVideos() {
 }
 
 function libraryCard(video, canManageVideos) {
-  const pendingUpload = String(video.status?.state || "").toLowerCase() === "pendingupload";
+  const uploadStatus = String(video.status?.state || "").toLowerCase();
+  const pendingUpload = uploadStatus === "pendingupload";
+  const failedUpload = uploadStatus === "error";
+  const mayRemove = canManageVideos && video.canManage === true;
   const statusLabel = video.readyToStream ? video.visibility : isAbandonedUpload(video) ? "Abandoned upload" : pendingUpload ? "Pending upload" : video.status?.state || "processing";
+  const failureReason = failedUpload
+    ? String(video.status?.errorReasonText || "Cloudflare could not download or process this URL.")
+    : "";
   return `
     <article class="video-card ${state.selected?.uid === video.uid ? "selected" : ""}" data-video-id="${escapeHtml(video.uid)}" tabindex="0">
       <div class="video-thumb">
@@ -836,7 +845,8 @@ function libraryCard(video, canManageVideos) {
         <h3>${escapeHtml(video.name)}</h3>
         <div class="video-card-metadata"><span>${escapeHtml(categoryLabel(video.purpose))}</span><span>${escapeHtml(formatDate(video.created))}</span></div>
         <div class="meta-row"><span>${video.external ? "External" : formatTime(video.duration)}</span><span class="badge badge-${video.readyToStream ? video.visibility : "processing"}">${escapeHtml(statusLabel)}</span></div>
-        ${pendingUpload && canManageVideos ? `<button class="button button-danger button-small pending-delete" type="button" data-delete-video-id="${escapeHtml(video.uid)}" data-busy>Delete incomplete upload</button>` : ""}
+        ${failedUpload ? `<p class="upload-failure-reason">${escapeHtml(failureReason)}</p>` : ""}
+        ${failedUpload && mayRemove ? `<button class="button button-danger button-small pending-delete" type="button" data-delete-video-id="${escapeHtml(video.uid)}" data-busy>Remove failed import</button>` : pendingUpload && mayRemove ? `<button class="button button-danger button-small pending-delete" type="button" data-delete-video-id="${escapeHtml(video.uid)}" data-busy>Delete incomplete upload</button>` : ""}
       </div>
     </article>`;
 }
@@ -938,7 +948,7 @@ async function loadManagement() {
 
 function renderManagement() {
   const totals = managementTotals();
-  const actionable = state.videos.filter((video) => uploadState(video) !== "ready");
+  const actionable = state.videos.filter((video) => uploadState(video) !== "ready" && video.canManage === true);
   const abandoned = state.videos.filter(isAbandonedUpload);
   const database = state.management?.database;
   const databaseCopy = !database

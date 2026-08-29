@@ -212,6 +212,7 @@ textarea { min-height: 110px; resize: vertical; }
 .video-card-metadata { display: flex; justify-content: space-between; gap: 10px; margin: 7px 0 12px; color: var(--vivad-muted); font-size: 0.74rem; }
 .video-card-metadata span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pending-delete { width: 100%; margin-top: 12px; }
+.upload-failure-reason { margin: 10px 0 0; color: #9d001e; font-size: 0.76rem; line-height: 1.4; }
 .library-summary { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
 .management-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
 .management-stat { border: 1px solid var(--vivad-border); border-radius: 8px; padding: 15px; background: #fff; }
