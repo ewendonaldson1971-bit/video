@@ -23,6 +23,7 @@ import {
 } from "./lib/video.mjs";
 
 const API_ROOT = "https://api.cloudflare.com/client/v4";
+const PLAYBACK_POLICY_VERSION = "2026-08-31-open-origin";
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -65,16 +66,28 @@ function authoritativePlaybackOrigins(request) {
 async function ensureApplicationPlayback(video, request, { force = false } = {}) {
   const current = Array.isArray(video?.allowedOrigins) ? video.allowedOrigins : [];
   const desired = authoritativePlaybackOrigins(request);
-  if (!force && originPoliciesMatch(current, desired)) return { video, repaired: false, repairError: null };
+  const policyIsCurrent = video?.meta?.vivadPlaybackPolicyVersion === PLAYBACK_POLICY_VERSION;
+  if (!force && policyIsCurrent && originPoliciesMatch(current, desired)) return { video, repaired: false, repairError: null };
   try {
-    const updated = await cloudflare(`/stream/${video.uid}`, {
+    await cloudflare(`/stream/${video.uid}`, {
       method: "POST",
-      body: JSON.stringify({ uid: video.uid, allowedOrigins: desired }),
+      body: JSON.stringify({
+        uid: video.uid,
+        allowedOrigins: desired,
+        meta: { ...(video.meta || {}), vivadPlaybackPolicyVersion: PLAYBACK_POLICY_VERSION },
+      }),
     });
-    return { video: updated, repaired: true, repairError: null };
+    // Cloudflare can return an accepted update before the playback record used by
+    // Stream's edge is current. Re-read the authoritative record and only issue a
+    // player URL after the saved policy is visible.
+    const verified = await getVideo(video.uid);
+    if (!originPoliciesMatch(verified.allowedOrigins, desired) || verified?.meta?.vivadPlaybackPolicyVersion !== PLAYBACK_POLICY_VERSION) {
+      throw new Error("Cloudflare did not persist the requested playback policy.");
+    }
+    return { video: verified, repaired: true, repairError: null };
   } catch (error) {
     console.warn(JSON.stringify({ event: "video.playback-origin-repair-failed", uid: video.uid, message: error.message }));
-    return { video, repaired: false, repairError: "Cloudflare rejected the playback-origin update." };
+    return { video, repaired: false, repairError: "Cloudflare could not save the playback policy. An administrator should verify that the API token has Stream Edit permission." };
   }
 }
 
@@ -570,7 +583,7 @@ async function handler(request) {
     const originResult = await ensureApplicationPlayback(video, request);
     video = originResult.video;
     playbackOrigin = { repaired: originResult.repaired, repairError: originResult.repairError };
-    const playback = video.readyToStream ? await createPlayback(video, 1) : null;
+    const playback = video.readyToStream && !originResult.repairError ? await createPlayback(video, 1) : null;
     const safe = publicVideo(video);
     const repository = new VideoRepository();
     const acknowledgement = repository.configured

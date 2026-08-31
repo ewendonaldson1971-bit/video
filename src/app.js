@@ -1101,14 +1101,15 @@ function renderComments() {
 
 async function submitComment(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
   const body = String(form.get("comment") || "").trim();
   if (!body) return;
   setBusy(true);
   try {
     const result = await api("/comments", { method: "POST", body: JSON.stringify({ videoUid: state.selected.uid, body }) });
     state.comments.push(result.comment);
-    event.currentTarget.reset();
+    formElement.reset();
     renderComments();
     emitHostEvent("video.comment.created", { uid: state.selected.uid, commentId: result.comment.id });
     toast("Comment added.");
@@ -1160,12 +1161,16 @@ function renderViewer() {
     ["Category", categoryLabel(video.purpose)], ["Provider", providerName], ["Version", video.core?.version || "1"], ["Owner", video.core?.contentOwner],
     ["Department", video.core?.department], ["Topic", video.core?.topic], ["Review date", video.core?.reviewDate ? formatDate(video.core.reviewDate) : ""],
   ].filter(([, value]) => value);
+  const playbackPolicyError = state.playbackOrigin?.repairError || "";
+  const playbackOriginBlocked = !video.external && video.readyToStream && !playbackAllowedOnCurrentHost(video);
   document.querySelector("#view").innerHTML = `
     <section class="panel viewer-panel">
       <div class="panel-header"><div><p class="eyebrow">Viewing</p><h2>${escapeHtml(video.name)}</h2></div><div class="button-row"><span class="badge badge-${escapeHtml(video.visibility)}">${escapeHtml(video.visibility)}</span>${state.permissions?.manage && !video.external ? '<button class="button button-secondary button-small" id="edit-from-view" type="button">Edit video</button>' : ""}</div></div>
-      <div class="panel-body viewer-layout">
+      <div class="panel-body">
+        ${playbackPolicyError ? `<div class="status-banner error" style="margin-bottom:20px" role="alert"><span>${escapeHtml(playbackPolicyError)}</span><button class="button button-secondary button-small" id="retry-view-playback" type="button">Retry playback</button></div>` : playbackOriginBlocked ? `<div class="status-banner error" style="margin-bottom:20px" role="alert"><span>This video's Cloudflare policy still excludes ${escapeHtml(window.location.hostname)}.</span><button class="button button-secondary button-small" id="retry-view-playback" type="button">Retry playback</button></div>` : ""}
+        <div class="viewer-layout">
         <div>
-          ${state.playback?.iframeUrl ? `<iframe class="player-frame" src="${escapeHtml(state.playback.iframeUrl)}" title="${escapeHtml(video.name)}" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>` : '<div class="player-placeholder"><p>Preview is not available yet.</p></div>'}
+          ${state.playback?.iframeUrl && !playbackPolicyError && !playbackOriginBlocked ? `<iframe class="player-frame" src="${escapeHtml(state.playback.iframeUrl)}" title="${escapeHtml(video.name)}" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>` : `<div class="player-placeholder"><p>${playbackPolicyError || playbackOriginBlocked ? "Playback is temporarily unavailable while Cloudflare's policy is repaired." : "Preview is not available yet."}</p></div>`}
           <div class="viewer-copy"><p>${escapeHtml(video.description || "No description has been provided.")}</p></div>
           <section class="tool-card video-comments" aria-labelledby="video-comments-heading">
             <div class="comments-heading"><div><p class="eyebrow">Discussion</p><h3 id="video-comments-heading">Comments</h3></div><span class="muted" id="video-comment-count">${state.comments.length} comment${state.comments.length === 1 ? "" : "s"}</span></div>
@@ -1177,11 +1182,19 @@ function renderViewer() {
           <div class="tool-card"><h3>Video details</h3><dl class="metadata-list">${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>${chapters.length ? `<h4>Chapters</h4><div class="chapter-links">${chapters.map((chapter) => `<button type="button" data-view-chapter="${chapter.start}"><span>${escapeHtml(chapter.title)}</span><small>${formatTimecode(chapter.start)}</small></button>`).join("")}</div>` : ""}${links.length ? `<h4>Related documents</h4><ul class="related-links">${links.map((url) => `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a></li>`).join("")}</ul>` : ""}</div>
           ${acknowledgement.required ? `<div class="tool-card acknowledgement-card ${record ? "complete" : ""}"><h3>Acknowledgement</h3>${record ? `<p><strong>Current version acknowledged.</strong></p><p class="muted">Version ${escapeHtml(acknowledgement.version)} · ${escapeHtml(new Date(record.acknowledged_at).toLocaleString("en-AU"))}</p>` : `<p>Confirm that you have read and understood this video.</p><button class="button button-primary" id="acknowledge-video" type="button" data-busy ${acknowledgement.available ? "" : "disabled"}>Acknowledge this video</button>`}</div>` : ""}
         </aside>
+        </div>
       </div>
     </section>`;
   document.querySelector("#edit-from-view")?.addEventListener("click", () => navigate("edit"));
   document.querySelector("#comment-form")?.addEventListener("submit", submitComment);
   document.querySelector("#acknowledge-video")?.addEventListener("click", acknowledgeSelectedVideo);
+  document.querySelector("#retry-view-playback")?.addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      await refreshSelected(false, true);
+      if (!state.playbackOrigin?.repairError && state.playback?.iframeUrl) toast("Playback policy repaired.");
+    } finally { setBusy(false); }
+  });
   document.querySelectorAll("[data-view-chapter]").forEach((button) => button.addEventListener("click", () => {
     const frame = document.querySelector(".viewer-panel .player-frame");
     if (!frame) return;
@@ -1808,7 +1821,8 @@ async function refreshSelected(notify = true, bustPlaybackCache = false) {
       state.playback.iframeUrl = iframeUrl.toString();
     }
     state.playbackRequested = true;
-    renderEditor();
+    if (state.section === "view") renderViewer();
+    else renderEditor();
     if (result.playbackOrigin?.repaired) toast("An old Cloudflare playback restriction was removed permanently.");
     else if (notify) toast(result.video.readyToStream ? "Video is ready." : "Processing status updated.");
   } catch (error) { toast(error.message, "error"); }
