@@ -138,6 +138,18 @@ async function getViewableVideo(session, uid) {
   return video;
 }
 
+async function getCommentableVideo(session, uid) {
+  if (/^[a-zA-Z0-9]{20,64}$/.test(uid)) return publicVideo(await getViewableVideo(session, uid));
+  if (/^(youtube|vimeo):[a-zA-Z0-9_-]{6,64}$/.test(uid)) {
+    const repository = new VideoRepository();
+    if (!repository.configured) throw Object.assign(new Error("Video comments require Netlify Database or VIDEO_DATABASE_URL."), { status: 503 });
+    const external = await repository.externalByUid({ uid, session });
+    if (!external) throw Object.assign(new Error("You do not have access to this video."), { status: 403 });
+    return external;
+  }
+  throw Object.assign(new Error("Invalid video ID."), { status: 400 });
+}
+
 function videoVersion(video) {
   return String(video?.meta?.vivadVersion || "1").trim().slice(0, 24) || "1";
 }
@@ -365,6 +377,20 @@ async function handler(request) {
       console.warn(JSON.stringify({ event: "video.catalogue.status.failed", message: error.message }));
       return json({ database: { configured: true, available: false, error: "The video catalogue is temporarily unavailable." }, catalogue: null }, 503);
     }
+  }
+
+  if (path === "/api/comments" && ["GET", "POST"].includes(request.method)) {
+    const repository = new VideoRepository();
+    if (!repository.configured) throw Object.assign(new Error("Video comments require Netlify Database or VIDEO_DATABASE_URL."), { status: 503 });
+    const input = request.method === "POST" ? await requestBody(request) : null;
+    const uid = String(input?.videoUid || new URL(request.url).searchParams.get("videoUid") || "").trim();
+    await getCommentableVideo(session, uid);
+    if (request.method === "GET") return json({ comments: await repository.listComments({ uid }) });
+    enforceRateLimit(request, "video-comment", { limit: 60, windowMs: 60 * 60 * 1000 });
+    const body = String(input.body || "").trim();
+    if (!body) throw Object.assign(new Error("Enter a comment."), { status: 400 });
+    if (body.length > 2000) throw Object.assign(new Error("Comments can contain up to 2,000 characters."), { status: 400 });
+    return json({ comment: await repository.createComment({ uid, session, body }) }, 201);
   }
 
   if (path === "/api/videos/external" && request.method === "POST") {

@@ -27,6 +27,9 @@ const state = {
   permissions: null,
   acknowledgement: null,
   acknowledgementReport: null,
+  comments: [],
+  commentsAvailable: true,
+  commentsError: "",
   editorCapabilities: null,
   editorDraft: null,
   playback: null,
@@ -180,6 +183,11 @@ async function demoApi(path, options) {
   if (path === "/session") return { session: state.session };
   if (path === "/videos") return { videos: [demoVideo] };
   if (path === "/management") return { database: { configured: true }, catalogue: { counts: [{ status: "ready", count: 1 }], recentEvents: [] } };
+  if (path.startsWith("/comments") && (!options.method || options.method === "GET")) return { comments: state.comments };
+  if (path === "/comments" && options.method === "POST") {
+    const input = JSON.parse(options.body || "{}");
+    return { comment: { id: String(Date.now()), video_uid: input.videoUid, user_id: "demo-user", user_name: state.session?.name || "Demo user", source_app: "standalone", body: input.body, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } };
+  }
   if (path.endsWith("/acknowledgements")) return { report: { uid: demoVideo.uid, version: demoVideo.core.version, count: 0, records: [] } };
   if (path.endsWith("/acknowledgement")) return { acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: options.method === "POST" ? { acknowledged_at: new Date().toISOString() } : null } };
   if (path.endsWith("/highlights")) return { videos: [{ ...demoVideo, uid: "demo-highlight-id", name: "Demo highlight" }] };
@@ -328,11 +336,11 @@ function shell() {
         </div>
         <button class="button button-secondary" id="refresh-videos">Refresh library</button>
       </section>
-      <nav class="workflow" style="--workflow-columns:${canEdit ? 5 : 2}" aria-label="Video workflow">
+      <nav class="workflow" style="--workflow-columns:${canEdit ? 6 : 2};--workflow-mobile-columns:${canEdit ? 3 : 2}" aria-label="Video workflow">
         ${canEdit ? '<button data-section="upload"><span class="step-number">01</span>Upload</button>' : ""}
         <button data-section="library"><span class="step-number">${canEdit ? "02" : "01"}</span>Library</button>
-        <button data-section="edit"><span class="step-number">${canEdit ? "03" : "02"}</span>${canEdit ? "Edit" : "Watch"}</button>
-        ${canEdit ? '<button data-section="share"><span class="step-number">04</span>Share</button><button data-section="manage"><span class="step-number">05</span>Manage</button>' : ""}
+        <button data-section="view"><span class="step-number">${canEdit ? "03" : "02"}</span>${canEdit ? "View" : "Watch"}</button>
+        ${canEdit ? '<button data-section="edit"><span class="step-number">04</span>Edit</button><button data-section="share"><span class="step-number">05</span>Share</button><button data-section="manage"><span class="step-number">06</span>Manage</button>' : ""}
       </nav>
       <div id="view"></div>
     </main>
@@ -346,8 +354,8 @@ function shell() {
 
 function navigate(section) {
   const canEdit = ["editor", "admin"].includes(state.session?.role);
-  if (!canEdit && ["upload", "share", "manage"].includes(section)) section = "library";
-  if ((section === "edit" || section === "share") && !state.selected) {
+  if (!canEdit && ["upload", "edit", "share", "manage"].includes(section)) section = state.selected ? "view" : "library";
+  if (["view", "edit", "share"].includes(section) && !state.selected) {
     toast("Select a video from the library first.", "error");
     section = "library";
   }
@@ -355,6 +363,7 @@ function navigate(section) {
   document.querySelectorAll("[data-section]").forEach((button) => button.classList.toggle("active", button.dataset.section === section));
   if (section === "upload") renderUpload();
   if (section === "library") renderLibrary();
+  if (section === "view") renderViewer();
   if (section === "edit") renderEditor();
   if (section === "share") renderShare();
   if (section === "manage") {
@@ -1027,7 +1036,8 @@ async function selectVideo(uid) {
       state.editorDraft = null;
       state.playbackRequested = true;
       emitHostEvent("video.selected", { uid, provider: external.provider });
-      navigate("edit");
+      await loadComments(false);
+      navigate("view");
       return;
     }
     const result = await api(`/videos/${uid}`);
@@ -1041,12 +1051,67 @@ async function selectVideo(uid) {
     state.editorDraft = null;
     state.playbackRequested = true;
     emitHostEvent("video.selected", { uid });
-    navigate(result.video.readyToStream ? "edit" : "library");
+    if (result.video.readyToStream) await loadComments(false);
+    navigate(result.video.readyToStream ? "view" : "library");
     if (result.playbackOrigin?.repaired) toast("An old Cloudflare playback restriction was removed permanently.");
     if (!result.video.readyToStream) {
       const pending = String(result.video.status?.state || "").toLowerCase() === "pendingupload";
       toast(pending ? "This upload is incomplete. Reselect the original file to resume it, or delete the incomplete upload." : "This video is still processing.", pending ? "error" : "success");
     }
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function loadComments(render = true) {
+  if (!state.selected) return;
+  try {
+    const result = await api(`/comments?videoUid=${encodeURIComponent(state.selected.uid)}`);
+    state.comments = Array.isArray(result.comments) ? result.comments : [];
+    state.commentsAvailable = true;
+    state.commentsError = "";
+  } catch (error) {
+    state.comments = [];
+    state.commentsAvailable = false;
+    state.commentsError = error.message;
+  }
+  if (render) renderComments();
+}
+
+function commentDate(value) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function commentsMarkup() {
+  if (!state.commentsAvailable) return `<div class="status-banner error"><span>${escapeHtml(state.commentsError || "Comments are temporarily unavailable.")}</span></div>`;
+  if (!state.comments.length) return '<div class="comments-empty"><p>No comments yet. Start the conversation.</p></div>';
+  return `<ol class="comment-list">${state.comments.map((comment) => `
+    <li class="video-comment">
+      <div class="comment-avatar" aria-hidden="true">${escapeHtml(initials(comment.user_name))}</div>
+      <div class="comment-content"><div class="comment-meta"><strong>${escapeHtml(comment.user_name || "Vivad user")}</strong><time datetime="${escapeHtml(comment.created_at)}">${escapeHtml(commentDate(comment.created_at))}</time></div><p>${escapeHtml(comment.body)}</p></div>
+    </li>`).join("")}</ol>`;
+}
+
+function renderComments() {
+  const list = document.querySelector("#video-comments-list");
+  const count = document.querySelector("#video-comment-count");
+  if (list) list.innerHTML = commentsMarkup();
+  if (count) count.textContent = `${state.comments.length} comment${state.comments.length === 1 ? "" : "s"}`;
+}
+
+async function submitComment(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const body = String(form.get("comment") || "").trim();
+  if (!body) return;
+  setBusy(true);
+  try {
+    const result = await api("/comments", { method: "POST", body: JSON.stringify({ videoUid: state.selected.uid, body }) });
+    state.comments.push(result.comment);
+    event.currentTarget.reset();
+    renderComments();
+    emitHostEvent("video.comment.created", { uid: state.selected.uid, commentId: result.comment.id });
+    toast("Comment added.");
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
 }
@@ -1090,17 +1155,23 @@ function renderViewer() {
   const record = acknowledgement.record;
   const links = (video.core?.relatedLinks || []).map(safeExternalUrl).filter(Boolean);
   const chapters = video.core?.chapters || [];
+  const providerName = video.external ? (video.provider === "youtube" ? "YouTube" : "Vimeo") : "Cloudflare Stream";
   const metadata = [
-    ["Category", categoryLabel(video.purpose)], ["Version", video.core?.version || "1"], ["Owner", video.core?.contentOwner],
+    ["Category", categoryLabel(video.purpose)], ["Provider", providerName], ["Version", video.core?.version || "1"], ["Owner", video.core?.contentOwner],
     ["Department", video.core?.department], ["Topic", video.core?.topic], ["Review date", video.core?.reviewDate ? formatDate(video.core.reviewDate) : ""],
   ].filter(([, value]) => value);
   document.querySelector("#view").innerHTML = `
     <section class="panel viewer-panel">
-      <div class="panel-header"><div><p class="eyebrow">Watch</p><h2>${escapeHtml(video.name)}</h2></div><span class="badge badge-${escapeHtml(video.visibility)}">${escapeHtml(video.visibility)}</span></div>
+      <div class="panel-header"><div><p class="eyebrow">Viewing</p><h2>${escapeHtml(video.name)}</h2></div><div class="button-row"><span class="badge badge-${escapeHtml(video.visibility)}">${escapeHtml(video.visibility)}</span>${state.permissions?.manage && !video.external ? '<button class="button button-secondary button-small" id="edit-from-view" type="button">Edit video</button>' : ""}</div></div>
       <div class="panel-body viewer-layout">
         <div>
-          ${state.playback?.iframeUrl ? `<iframe class="player-frame" src="${escapeHtml(state.playback.iframeUrl)}" title="${escapeHtml(video.name)}" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>` : '<div class="player-placeholder"><p>Preview is not available yet.</p></div>'}
+          ${state.playback?.iframeUrl ? `<iframe class="player-frame" src="${escapeHtml(state.playback.iframeUrl)}" title="${escapeHtml(video.name)}" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>` : '<div class="player-placeholder"><p>Preview is not available yet.</p></div>'}
           <div class="viewer-copy"><p>${escapeHtml(video.description || "No description has been provided.")}</p></div>
+          <section class="tool-card video-comments" aria-labelledby="video-comments-heading">
+            <div class="comments-heading"><div><p class="eyebrow">Discussion</p><h3 id="video-comments-heading">Comments</h3></div><span class="muted" id="video-comment-count">${state.comments.length} comment${state.comments.length === 1 ? "" : "s"}</span></div>
+            <div id="video-comments-list">${commentsMarkup()}</div>
+            ${state.commentsAvailable ? `<form id="comment-form" class="comment-form"><label class="field"><span>Add a comment as ${escapeHtml(state.session?.name || state.session?.email || "Vivad user")}</span><textarea name="comment" maxlength="2000" rows="3" placeholder="Write a comment…" required></textarea></label><div class="comment-form-footer"><small>Visible to authenticated users who can view this video.</small><button class="button button-primary button-small" type="submit" data-busy>Post comment</button></div></form>` : ""}
+          </section>
         </div>
         <aside class="viewer-details">
           <div class="tool-card"><h3>Video details</h3><dl class="metadata-list">${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>${chapters.length ? `<h4>Chapters</h4><div class="chapter-links">${chapters.map((chapter) => `<button type="button" data-view-chapter="${chapter.start}"><span>${escapeHtml(chapter.title)}</span><small>${formatTimecode(chapter.start)}</small></button>`).join("")}</div>` : ""}${links.length ? `<h4>Related documents</h4><ul class="related-links">${links.map((url) => `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a></li>`).join("")}</ul>` : ""}</div>
@@ -1108,6 +1179,8 @@ function renderViewer() {
         </aside>
       </div>
     </section>`;
+  document.querySelector("#edit-from-view")?.addEventListener("click", () => navigate("edit"));
+  document.querySelector("#comment-form")?.addEventListener("submit", submitComment);
   document.querySelector("#acknowledge-video")?.addEventListener("click", acknowledgeSelectedVideo);
   document.querySelectorAll("[data-view-chapter]").forEach((button) => button.addEventListener("click", () => {
     const frame = document.querySelector(".viewer-panel .player-frame");
@@ -1166,7 +1239,7 @@ function renderEditor() {
   const video = state.selected;
   if (!video) return navigate("library");
   if (video.external) return renderExternalVideo();
-  if (!state.permissions?.manage) return renderViewer();
+  if (!state.permissions?.manage) return navigate("view");
   const draft = ensureEditorDraft(video);
   const duration = Math.max(0.1, video.duration || 0.1);
   const playbackOriginBlocked = video.readyToStream && !playbackAllowedOnCurrentHost(video);
@@ -2040,7 +2113,7 @@ async function startApp() {
   if (returnAfterLogin?.uid && state.videos.some((video) => video.uid === returnAfterLogin.uid)) {
     try { await selectVideo(returnAfterLogin.uid); return; } catch { /* Fall back to the saved section. */ }
   }
-  if (["upload", "library", "edit", "share", "manage"].includes(returnAfterLogin?.section)) {
+  if (["upload", "library", "view", "edit", "share", "manage"].includes(returnAfterLogin?.section)) {
     navigate(returnAfterLogin.section);
     return;
   }

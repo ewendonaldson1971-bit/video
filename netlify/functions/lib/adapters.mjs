@@ -180,6 +180,21 @@ export class VideoRepository {
     return rows.map((row) => externalVideo(row, session));
   }
 
+  async externalByUid({ uid, session = {} }) {
+    const administrator = session.role === "admin";
+    const parameters = administrator ? [String(uid)] : [String(uid), String(session.sub)];
+    const { rows } = await this.client().pool.query(`
+      SELECT uid, provider, provider_id, owner_id, source_url, title, purpose, visibility, metadata, created_at, updated_at
+      FROM vivad_video_records
+      WHERE uid = $1
+        AND provider IN ('youtube', 'vimeo')
+        AND deleted_at IS NULL
+        ${administrator ? "" : "AND (owner_id = $2 OR visibility IN ('public', 'organisation'))"}
+      LIMIT 1
+    `, parameters);
+    return rows[0] ? externalVideo(rows[0], session) : null;
+  }
+
   async recordEvent({ uid, eventType, session = {}, details = {} }) {
     await this.client().pool.query(
       `INSERT INTO vivad_video_events (video_uid, event_type, actor_id, app, details) VALUES ($1, $2, $3, $4, $5::jsonb)`,
@@ -222,6 +237,35 @@ export class VideoRepository {
       ORDER BY acknowledged_at DESC, user_name ASC
     `, [String(uid), String(version)]);
     return rows;
+  }
+
+  async listComments({ uid }) {
+    const { rows } = await this.client().pool.query(`
+      SELECT id::text, video_uid, user_id, user_name, source_app, body, created_at, updated_at
+      FROM vivad_video_comments
+      WHERE video_uid = $1
+      ORDER BY created_at ASC, id ASC
+      LIMIT 500
+    `, [String(uid)]);
+    return rows;
+  }
+
+  async createComment({ uid, session, body }) {
+    const { rows } = await this.client().pool.query(`
+      INSERT INTO vivad_video_comments
+        (video_uid, user_id, user_email, user_name, source_app, body)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id::text, video_uid, user_id, user_name, source_app, body, created_at, updated_at
+    `, [
+      String(uid),
+      String(session.sub),
+      session.email ? String(session.email) : null,
+      String(session.name || "Vivad user").slice(0, 120),
+      String(session.app || "standalone"),
+      String(body),
+    ]);
+    await this.recordEvent({ uid, eventType: "video.comment.created", session, details: { commentId: rows[0]?.id || null } });
+    return rows[0];
   }
 
   async saveEditProject({ id, uid, session, recipe }) {

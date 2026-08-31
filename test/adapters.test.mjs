@@ -74,6 +74,24 @@ test("acknowledgements are version-specific and idempotent", async () => {
   assert.ok(queries.some(({ text }) => /INSERT INTO vivad_video_events/.test(text)));
 });
 
+test("authenticated video comments retain author attribution and audit events", async () => {
+  const queries = [];
+  const created = { id: "17", video_uid: "video123", user_id: "user-1", user_name: "Sam Evans", source_app: "standalone", body: "Please update this section.", created_at: "2026-08-31T01:00:00.000Z", updated_at: "2026-08-31T01:00:00.000Z" };
+  const database = { pool: { query: async (text, values) => {
+    queries.push({ text, values });
+    if (/INSERT INTO vivad_video_comments/.test(text)) return { rows: [created], rowCount: 1 };
+    if (/SELECT id::text/.test(text)) return { rows: [created] };
+    return { rows: [], rowCount: 1 };
+  } } };
+  const repository = new VideoRepository({}, database);
+  const comment = await repository.createComment({ uid: "video123", session: { sub: "user-1", email: "sam@example.com", name: "Sam Evans", app: "standalone" }, body: "Please update this section." });
+  const comments = await repository.listComments({ uid: "video123" });
+  assert.deepEqual(comment, created);
+  assert.deepEqual(comments, [created]);
+  assert.ok(queries.some(({ text, values }) => /INSERT INTO vivad_video_comments/.test(text) && values[2] === "sam@example.com" && values[5] === created.body));
+  assert.ok(queries.some(({ text, values }) => /INSERT INTO vivad_video_events/.test(text) && values[1] === "video.comment.created"));
+});
+
 test("unconfigured adapters fail clearly rather than pretending to persist", async () => {
   await assert.rejects(() => new VideoRepository().saveExternal({}), /VIDEO_DATABASE_URL/);
   await assert.rejects(() => new StrapiPublisher({}).saveDraft({}), /not configured/);
