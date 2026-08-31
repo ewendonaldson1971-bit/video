@@ -30,6 +30,7 @@ const state = {
   comments: [],
   commentsAvailable: true,
   commentsError: "",
+  editingCommentId: null,
   editorCapabilities: null,
   editorDraft: null,
   playback: null,
@@ -183,10 +184,22 @@ async function demoApi(path, options) {
   if (path === "/session") return { session: state.session };
   if (path === "/videos") return { videos: [demoVideo] };
   if (path === "/management") return { database: { configured: true }, catalogue: { counts: [{ status: "ready", count: 1 }], recentEvents: [] } };
+  const demoCommentMatch = path.match(/^\/comments\/(\d+)$/);
+  if (demoCommentMatch && options.method === "PATCH") {
+    const input = JSON.parse(options.body || "{}");
+    const comment = state.comments.find((item) => item.id === demoCommentMatch[1] && item.user_id === state.session?.sub);
+    if (!comment) throw new Error("Comment not found or you cannot edit it.");
+    return { comment: { ...comment, body: input.body, updated_at: new Date().toISOString() } };
+  }
+  if (demoCommentMatch && options.method === "DELETE") {
+    const comment = state.comments.find((item) => item.id === demoCommentMatch[1] && item.user_id === state.session?.sub);
+    if (!comment) throw new Error("Comment not found or you cannot delete it.");
+    return { deleted: true, commentId: comment.id };
+  }
   if (path.startsWith("/comments") && (!options.method || options.method === "GET")) return { comments: state.comments };
   if (path === "/comments" && options.method === "POST") {
     const input = JSON.parse(options.body || "{}");
-    return { comment: { id: String(Date.now()), video_uid: input.videoUid, user_id: "demo-user", user_name: state.session?.name || "Demo user", source_app: "standalone", body: input.body, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } };
+    return { comment: { id: String(Date.now()), video_uid: input.videoUid, user_id: state.session?.sub, user_name: state.session?.name || "Demo user", source_app: "standalone", body: input.body, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } };
   }
   if (path.endsWith("/acknowledgements")) return { report: { uid: demoVideo.uid, version: demoVideo.core.version, count: 0, records: [] } };
   if (path.endsWith("/acknowledgement")) return { acknowledgement: { available: true, required: demoVideo.core.requiredAcknowledgement, version: demoVideo.core.version, record: options.method === "POST" ? { acknowledged_at: new Date().toISOString() } : null } };
@@ -1064,6 +1077,7 @@ async function selectVideo(uid) {
 
 async function loadComments(render = true) {
   if (!state.selected) return;
+  state.editingCommentId = null;
   try {
     const result = await api(`/comments?videoUid=${encodeURIComponent(state.selected.uid)}`);
     state.comments = Array.isArray(result.comments) ? result.comments : [];
@@ -1085,11 +1099,19 @@ function commentDate(value) {
 function commentsMarkup() {
   if (!state.commentsAvailable) return `<div class="status-banner error"><span>${escapeHtml(state.commentsError || "Comments are temporarily unavailable.")}</span></div>`;
   if (!state.comments.length) return '<div class="comments-empty"><p>No comments yet. Start the conversation.</p></div>';
-  return `<ol class="comment-list">${state.comments.map((comment) => `
-    <li class="video-comment">
-      <div class="comment-avatar" aria-hidden="true">${escapeHtml(initials(comment.user_name))}</div>
-      <div class="comment-content"><div class="comment-meta"><strong>${escapeHtml(comment.user_name || "Vivad user")}</strong><time datetime="${escapeHtml(comment.created_at)}">${escapeHtml(commentDate(comment.created_at))}</time></div><p>${escapeHtml(comment.body)}</p></div>
-    </li>`).join("")}</ol>`;
+  return `<ol class="comment-list">${state.comments.map((comment) => {
+    const isOwner = String(comment.user_id) === String(state.session?.sub);
+    const isEditing = isOwner && String(state.editingCommentId) === String(comment.id);
+    const wasEdited = Date.parse(comment.updated_at || 0) > Date.parse(comment.created_at || 0) + 500;
+    return `
+      <li class="video-comment">
+        <div class="comment-avatar" aria-hidden="true">${escapeHtml(initials(comment.user_name))}</div>
+        <div class="comment-content">
+          <div class="comment-meta"><strong>${escapeHtml(comment.user_name || "Vivad user")}</strong><span><time datetime="${escapeHtml(comment.created_at)}">${escapeHtml(commentDate(comment.created_at))}</time>${wasEdited ? '<small class="comment-edited">Edited</small>' : ""}</span></div>
+          ${isEditing ? `<form class="comment-edit-form" data-comment-edit-form="${escapeHtml(comment.id)}"><label class="sr-only" for="comment-edit-${escapeHtml(comment.id)}">Edit comment</label><textarea id="comment-edit-${escapeHtml(comment.id)}" name="body" maxlength="2000" rows="3" required>${escapeHtml(comment.body)}</textarea><div class="comment-actions"><button class="button button-primary button-small" type="submit" data-busy>Save</button><button class="button button-quiet button-small" type="button" data-cancel-comment-edit>Cancel</button></div></form>` : `<p>${escapeHtml(comment.body)}</p>${isOwner ? `<div class="comment-actions"><button class="button button-quiet button-small" type="button" data-edit-comment="${escapeHtml(comment.id)}">Edit</button><button class="button button-quiet button-small comment-delete" type="button" data-delete-comment="${escapeHtml(comment.id)}">Delete</button></div>` : ""}`}
+        </div>
+      </li>`;
+  }).join("")}</ol>`;
 }
 
 function renderComments() {
@@ -1097,6 +1119,21 @@ function renderComments() {
   const count = document.querySelector("#video-comment-count");
   if (list) list.innerHTML = commentsMarkup();
   if (count) count.textContent = `${state.comments.length} comment${state.comments.length === 1 ? "" : "s"}`;
+  bindCommentActions();
+}
+
+function bindCommentActions() {
+  document.querySelectorAll("[data-edit-comment]").forEach((button) => button.addEventListener("click", () => {
+    state.editingCommentId = button.dataset.editComment;
+    renderComments();
+    document.querySelector(`[data-comment-edit-form="${CSS.escape(state.editingCommentId)}"] textarea`)?.focus();
+  }));
+  document.querySelectorAll("[data-cancel-comment-edit]").forEach((button) => button.addEventListener("click", () => {
+    state.editingCommentId = null;
+    renderComments();
+  }));
+  document.querySelectorAll("[data-comment-edit-form]").forEach((form) => form.addEventListener("submit", updateComment));
+  document.querySelectorAll("[data-delete-comment]").forEach((button) => button.addEventListener("click", () => deleteComment(button.dataset.deleteComment)));
 }
 
 async function submitComment(event) {
@@ -1113,6 +1150,38 @@ async function submitComment(event) {
     renderComments();
     emitHostEvent("video.comment.created", { uid: state.selected.uid, commentId: result.comment.id });
     toast("Comment added.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function updateComment(event) {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  const id = formElement.dataset.commentEditForm;
+  const body = String(new FormData(formElement).get("body") || "").trim();
+  if (!body) return toast("Enter a comment.", "error");
+  setBusy(true);
+  try {
+    const result = await api(`/comments/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ videoUid: state.selected.uid, body }) });
+    state.comments = state.comments.map((comment) => String(comment.id) === String(id) ? result.comment : comment);
+    state.editingCommentId = null;
+    renderComments();
+    emitHostEvent("video.comment.updated", { uid: state.selected.uid, commentId: id });
+    toast("Comment updated.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
+}
+
+async function deleteComment(id) {
+  if (!window.confirm("Delete your comment? This cannot be undone.")) return;
+  setBusy(true);
+  try {
+    await api(`/comments/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ videoUid: state.selected.uid }) });
+    state.comments = state.comments.filter((comment) => String(comment.id) !== String(id));
+    if (String(state.editingCommentId) === String(id)) state.editingCommentId = null;
+    renderComments();
+    emitHostEvent("video.comment.deleted", { uid: state.selected.uid, commentId: id });
+    toast("Comment deleted.");
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }
 }
@@ -1187,6 +1256,7 @@ function renderViewer() {
     </section>`;
   document.querySelector("#edit-from-view")?.addEventListener("click", () => navigate("edit"));
   document.querySelector("#comment-form")?.addEventListener("submit", submitComment);
+  bindCommentActions();
   document.querySelector("#acknowledge-video")?.addEventListener("click", acknowledgeSelectedVideo);
   document.querySelector("#retry-view-playback")?.addEventListener("click", async () => {
     setBusy(true);

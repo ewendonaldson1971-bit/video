@@ -406,6 +406,24 @@ async function handler(request) {
     return json({ comment: await repository.createComment({ uid, session, body }) }, 201);
   }
 
+  const commentMatch = path.match(/^\/api\/comments\/(\d+)$/);
+  if (commentMatch && ["PATCH", "DELETE"].includes(request.method)) {
+    const repository = new VideoRepository();
+    if (!repository.configured) throw Object.assign(new Error("Video comments require Netlify Database or VIDEO_DATABASE_URL."), { status: 503 });
+    enforceRateLimit(request, "video-comment-change", { limit: 120, windowMs: 60 * 60 * 1000 });
+    const input = await requestBody(request);
+    const uid = String(input.videoUid || "").trim();
+    await getCommentableVideo(session, uid);
+    if (request.method === "DELETE") {
+      const deleted = await repository.deleteComment({ id: commentMatch[1], uid, session });
+      return json({ deleted: true, commentId: deleted.id });
+    }
+    const body = String(input.body || "").trim();
+    if (!body) throw Object.assign(new Error("Enter a comment."), { status: 400 });
+    if (body.length > 2000) throw Object.assign(new Error("Comments can contain up to 2,000 characters."), { status: 400 });
+    return json({ comment: await repository.updateComment({ id: commentMatch[1], uid, session, body }) });
+  }
+
   if (path === "/api/videos/external" && request.method === "POST") {
     requireEditorRole(session);
     const input = await requestBody(request);

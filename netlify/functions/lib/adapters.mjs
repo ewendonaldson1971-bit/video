@@ -268,6 +268,29 @@ export class VideoRepository {
     return rows[0];
   }
 
+  async updateComment({ id, uid, session, body }) {
+    const { rows } = await this.client().pool.query(`
+      UPDATE vivad_video_comments
+      SET body = $4, updated_at = NOW()
+      WHERE id = $1 AND video_uid = $2 AND user_id = $3
+      RETURNING id::text, video_uid, user_id, user_name, source_app, body, created_at, updated_at
+    `, [String(id), String(uid), String(session.sub), String(body)]);
+    if (!rows[0]) throw Object.assign(new Error("Comment not found or you cannot edit it."), { status: 404 });
+    await this.recordEvent({ uid, eventType: "video.comment.updated", session, details: { commentId: rows[0].id } });
+    return rows[0];
+  }
+
+  async deleteComment({ id, uid, session }) {
+    const { rows } = await this.client().pool.query(`
+      DELETE FROM vivad_video_comments
+      WHERE id = $1 AND video_uid = $2 AND user_id = $3
+      RETURNING id::text, video_uid
+    `, [String(id), String(uid), String(session.sub)]);
+    if (!rows[0]) throw Object.assign(new Error("Comment not found or you cannot delete it."), { status: 404 });
+    await this.recordEvent({ uid, eventType: "video.comment.deleted", session, details: { commentId: rows[0].id } });
+    return rows[0];
+  }
+
   async saveEditProject({ id, uid, session, recipe }) {
     const { rows } = await this.client().pool.query(`
       INSERT INTO vivad_video_edit_projects (id, video_uid, owner_id, name, aspect_ratio, recipe)

@@ -92,6 +92,34 @@ test("authenticated video comments retain author attribution and audit events", 
   assert.ok(queries.some(({ text, values }) => /INSERT INTO vivad_video_events/.test(text) && values[1] === "video.comment.created"));
 });
 
+test("only a comment owner can edit or delete it and both actions are audited", async () => {
+  const queries = [];
+  const updated = { id: "17", video_uid: "video123", user_id: "user-1", user_name: "Sam Evans", source_app: "standalone", body: "Updated wording.", created_at: "2026-08-31T01:00:00.000Z", updated_at: "2026-08-31T02:00:00.000Z" };
+  const deleted = { id: "17", video_uid: "video123" };
+  const database = { pool: { query: async (text, values) => {
+    queries.push({ text, values });
+    if (/UPDATE vivad_video_comments/.test(text)) return { rows: values[2] === "user-1" ? [updated] : [], rowCount: values[2] === "user-1" ? 1 : 0 };
+    if (/DELETE FROM vivad_video_comments/.test(text)) return { rows: values[2] === "user-1" ? [deleted] : [], rowCount: values[2] === "user-1" ? 1 : 0 };
+    return { rows: [], rowCount: 1 };
+  } } };
+  const repository = new VideoRepository({}, database);
+  const owner = { sub: "user-1", app: "standalone" };
+  assert.deepEqual(await repository.updateComment({ id: "17", uid: "video123", session: owner, body: updated.body }), updated);
+  assert.deepEqual(await repository.deleteComment({ id: "17", uid: "video123", session: owner }), deleted);
+  await assert.rejects(
+    () => repository.updateComment({ id: "17", uid: "video123", session: { sub: "user-2" }, body: "Not allowed" }),
+    /cannot edit/,
+  );
+  await assert.rejects(
+    () => repository.deleteComment({ id: "17", uid: "video123", session: { sub: "user-2" } }),
+    /cannot delete/,
+  );
+  assert.ok(queries.some(({ text, values }) => /UPDATE vivad_video_comments/.test(text) && values[2] === "user-1" && values[3] === updated.body));
+  assert.ok(queries.some(({ text, values }) => /DELETE FROM vivad_video_comments/.test(text) && values[2] === "user-1"));
+  assert.ok(queries.some(({ text, values }) => /INSERT INTO vivad_video_events/.test(text) && values[1] === "video.comment.updated"));
+  assert.ok(queries.some(({ text, values }) => /INSERT INTO vivad_video_events/.test(text) && values[1] === "video.comment.deleted"));
+});
+
 test("unconfigured adapters fail clearly rather than pretending to persist", async () => {
   await assert.rejects(() => new VideoRepository().saveExternal({}), /VIDEO_DATABASE_URL/);
   await assert.rejects(() => new StrapiPublisher({}).saveDraft({}), /not configured/);
