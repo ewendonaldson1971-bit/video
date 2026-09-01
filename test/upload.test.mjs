@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isAbandonedUpload, patchTusChunk, ticketIsExpired, uploadStorageKey } from "../src/upload.js";
+import { assessUploadBitrate, declaredMaxBitrateMbps, estimateAverageBitrateMbps, friendlyUploadError, isAbandonedUpload, isBitrateLimitError, patchTusChunk, ticketIsExpired, uploadStorageKey } from "../src/upload.js";
 
 class FakeUploadTarget {
   addEventListener(type, handler) { this[type] = handler; }
@@ -51,4 +51,31 @@ test("only expired pending uploads are marked abandoned", () => {
   assert.equal(isAbandonedUpload({ status: { state: "pendingupload" }, uploadExpiry: "2026-08-27T13:00:00Z" }, now), false);
   assert.equal(isAbandonedUpload({ status: { state: "inprogress" }, uploadExpiry: "2026-08-27T11:00:00Z" }, now), false);
   assert.equal(isAbandonedUpload({ status: { state: "pendingupload" }, created: "2026-08-27T09:00:00Z" }, now), true);
+});
+
+test("upload preflight estimates average bitrate and blocks files near the Stream ceiling", () => {
+  assert.equal(estimateAverageBitrateMbps(1_000_000_000, 100), 80);
+  assert.equal(assessUploadBitrate(1_000_000_000, 100).status, "warning");
+  assert.equal(assessUploadBitrate(2_500_000_000, 100).status, "blocked");
+  assert.equal(assessUploadBitrate(100_000_000, 100).status, "ready");
+  assert.equal(assessUploadBitrate(100_000_000, 0).status, "unavailable");
+  assert.equal(assessUploadBitrate(100_000_000, 100, 205).status, "blocked");
+});
+
+test("upload preflight reads a declared MP4 maximum bitrate", () => {
+  const box = new Uint8Array(20);
+  const view = new DataView(box.buffer);
+  view.setUint32(0, 20);
+  box.set([0x62, 0x74, 0x72, 0x74], 4);
+  view.setUint32(8, 0);
+  view.setUint32(12, 220_000_000);
+  view.setUint32(16, 25_000_000);
+  assert.equal(declaredMaxBitrateMbps(box), 220);
+});
+
+test("Cloudflare bitrate failures are translated into actionable guidance", () => {
+  const cloudflareError = "The video bitrate exceeded the maximum acceptable value of 200 Mbps.";
+  assert.equal(isBitrateLimitError(cloudflareError), true);
+  assert.match(friendlyUploadError(cloudflareError), /H\.264 video and AAC audio/);
+  assert.equal(friendlyUploadError("Upload interrupted."), "Upload interrupted.");
 });

@@ -1,5 +1,5 @@
 import "./styles.css";
-import { isAbandonedUpload, patchTusChunk, ticketIsExpired, uploadStorageKey } from "./upload.js";
+import { assessUploadBitrate, declaredMaxBitrateMbps, friendlyUploadError, isAbandonedUpload, isBitrateLimitError, patchTusChunk, ticketIsExpired, uploadStorageKey } from "./upload.js";
 
 const app = document.querySelector("#app");
 const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get("demo") === "1";
@@ -37,6 +37,7 @@ const state = {
   playbackOrigin: null,
   playbackRequested: false,
   file: null,
+  fileAnalysis: null,
   upload: null,
   createMode: "upload",
   recorder: null,
@@ -148,7 +149,10 @@ function toast(message, type = "success") {
 
 function setBusy(value) {
   state.busy = value;
-  document.querySelectorAll("button[data-busy]").forEach((button) => { button.disabled = value; });
+  document.querySelectorAll("button[data-busy]").forEach((button) => {
+    const preflightBlocked = button.id === "upload-submit" && (!state.file || ["checking", "blocked"].includes(state.fileAnalysis?.status));
+    button.disabled = value || preflightBlocked;
+  });
 }
 
 function emitHostEvent(type, detail = {}) {
@@ -432,6 +436,62 @@ function creationDetails(title = "Video details") {
   </div>`;
 }
 
+function fileAnalysisMarkup() {
+  const analysis = state.fileAnalysis;
+  if (!state.file || !analysis) return "";
+  if (analysis.status === "checking") return '<div class="file-analysis muted"><span class="loading"></span> Checking duration and bitrate before upload…</div>';
+  if (analysis.status === "unavailable") return '<div class="status-banner info file-analysis"><span>Vivad could not read this file’s duration, so bitrate could not be checked in advance. Cloudflare will validate it after upload.</span></div>';
+  const bitrate = `${analysis.bitrateMbps.toFixed(1)} Mbps`;
+  const basis = analysis.declaredMaximumMbps ? "declared maximum bitrate" : "estimated average bitrate";
+  const summary = `${formatTime(analysis.duration)} · ${basis} ${bitrate}`;
+  if (analysis.status === "blocked") return `<div class="status-banner error file-analysis" role="alert"><span><strong>Convert this file before uploading.</strong> ${escapeHtml(summary)}. It is too close to or above Cloudflare Stream’s 200 Mbps ceiling. Re-export as MP4, H.264 video and AAC audio; use about 8 Mbps for 1080p.</span></div>`;
+  if (analysis.status === "warning") return `<div class="status-banner info file-analysis"><span><strong>Very high bitrate detected.</strong> ${escapeHtml(summary)}. Cloudflare recommends about 8 Mbps for 1080p. Converting first will make the upload much faster and reduce the risk of a processing failure.</span></div>`;
+  return `<div class="file-analysis file-analysis-ready"><span>${escapeHtml(summary)}</span><strong>Preflight passed</strong></div>`;
+}
+
+function updateFileAnalysisUI() {
+  const target = document.querySelector("#file-analysis");
+  if (target) target.innerHTML = fileAnalysisMarkup();
+  const submit = document.querySelector("#upload-submit");
+  if (submit) submit.disabled = !state.file || ["checking", "blocked"].includes(state.fileAnalysis?.status);
+}
+
+function videoFileDuration(file) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    const url = URL.createObjectURL(file);
+    let settled = false;
+    const finish = (result, error = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(url);
+      error ? reject(error) : resolve(result);
+    };
+    const timeout = setTimeout(() => finish(null, new Error("Video metadata timed out.")), 15000);
+    video.preload = "metadata";
+    video.muted = true;
+    video.addEventListener("loadedmetadata", () => Number.isFinite(video.duration) && video.duration > 0 ? finish(video.duration) : finish(null, new Error("Video duration is unavailable.")), { once: true });
+    video.addEventListener("error", () => finish(null, new Error("Video metadata could not be read.")), { once: true });
+    video.src = url;
+  });
+}
+
+async function videoDeclaredMaxBitrate(file) {
+  if (!/\.(mp4|mov|m4v)$/i.test(file.name)) return null;
+  const scanSize = 8 * 1024 * 1024;
+  const ranges = [[0, Math.min(file.size, scanSize)]];
+  if (file.size > scanSize) ranges.push([Math.max(0, file.size - scanSize), file.size]);
+  let maximum = null;
+  for (const [start, end] of ranges) {
+    const bitrate = declaredMaxBitrateMbps(await file.slice(start, end).arrayBuffer());
+    if (bitrate !== null && (maximum === null || bitrate > maximum)) maximum = bitrate;
+  }
+  return maximum;
+}
+
 function renderUpload() {
   const file = state.file;
   document.querySelector("#view").innerHTML = `
@@ -451,6 +511,7 @@ function renderUpload() {
               <button class="button button-primary" type="button" id="select-file">Select video</button>
               <input class="sr-only" type="file" id="file-input" accept="video/*,.mov,.mkv,.avi,.webm">
               ${file ? `<div class="selected-file"><strong>${escapeHtml(file.name)}</strong><span class="muted">${formatBytes(file.size)}</span></div>` : ""}
+              <div id="file-analysis">${fileAnalysisMarkup()}</div>
             </div>
           </div>
           <div id="upload-progress"></div>
@@ -471,7 +532,7 @@ function renderUpload() {
           ${creationDetails()}
           <label class="field"><span>Maximum expected duration</span><select name="maxDurationSeconds"><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600" selected>1 hour</option><option value="7200">2 hours</option><option value="18000">5 hours</option></select></label>
           <p class="expiry-note">Temporary deletion starts at 30 days. Protected sharing uses a stable Vivad watch page and fresh playback tokens.</p>
-          <button class="button button-primary" type="submit" data-busy ${file ? "" : "disabled"}>Upload to Cloudflare</button>
+          <button class="button button-primary" id="upload-submit" type="submit" data-busy ${file && !["checking", "blocked"].includes(state.fileAnalysis?.status) ? "" : "disabled"}>Upload to Cloudflare</button>
         </form>
       </div></div>
     </section>`;
@@ -499,7 +560,7 @@ function bindUpload() {
   document.querySelector("#add-external")?.addEventListener("click", addExternalVideo);
 }
 
-function selectFile(file) {
+async function selectFile(file) {
   if (!file) return;
   if (!file.type.startsWith("video/") && !/\.(mov|mkv|avi|webm|mp4|mpg|mpeg)$/i.test(file.name)) {
     toast("Please select a recognised video file.", "error");
@@ -510,7 +571,17 @@ function selectFile(file) {
     return;
   }
   state.file = file;
+  state.fileAnalysis = { status: "checking", duration: null, bitrateMbps: null };
   renderUpload();
+  try {
+    const [duration, declaredMaximumMbps] = await Promise.all([videoFileDuration(file), videoDeclaredMaxBitrate(file)]);
+    if (state.file !== file) return;
+    state.fileAnalysis = { ...assessUploadBitrate(file.size, duration, declaredMaximumMbps), duration };
+  } catch {
+    if (state.file !== file) return;
+    state.fileAnalysis = { status: "unavailable", duration: null, bitrateMbps: null };
+  }
+  updateFileAnalysisUI();
 }
 
 function preferredRecordingMimeType() {
@@ -619,11 +690,11 @@ function finishRecording() {
   const extension = mimeType.startsWith("audio/") ? "webm" : "webm";
   state.recordingStream?._sourceStreams?.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
   state.recordingStream?.getTracks().forEach((track) => track.stop());
-  state.file = new File([blob], `Vivad recording ${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}.${extension}`, { type: mimeType, lastModified: Date.now() });
+  const recordedFile = new File([blob], `Vivad recording ${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}.${extension}`, { type: mimeType, lastModified: Date.now() });
   state.createMode = "upload";
   state.recorder = null;
   state.recordingStream = null;
-  renderUpload();
+  selectFile(recordedFile);
   toast("Recording is ready. Review its details, then upload it.");
 }
 
@@ -671,6 +742,8 @@ async function addExternalVideo() {
 async function startUpload(event) {
   event.preventDefault();
   if (!state.file) return toast("Select a video first.", "error");
+  if (state.fileAnalysis?.status === "checking") return toast("Wait for the bitrate preflight to finish.", "error");
+  if (state.fileAnalysis?.status === "blocked") return toast("Convert this high-bitrate file before uploading it to Cloudflare.", "error");
   const form = new FormData(event.currentTarget);
   const visibility = form.get("uploadVisibility");
   setBusy(true);
@@ -701,8 +774,9 @@ async function startUpload(event) {
     emitHostEvent("video.uploaded", { uid: ticket.uid, visibility });
     await waitUntilReady(ticket.uid);
   } catch (error) {
-    showUploadProgress(state.upload?.progress || 0, error.message, true);
-    toast(error.message, "error");
+    const message = friendlyUploadError(error.message);
+    showUploadProgress(state.upload?.progress || 0, message, true);
+    toast(message, "error");
   } finally {
     setBusy(false);
   }
@@ -751,6 +825,29 @@ function showUploadProgress(percentage, label, error = false) {
   track.setAttribute("aria-valuenow", String(Math.round(value)));
   bar.style.width = `${value}%`;
   bar.style.background = error ? "#e4002b" : "";
+  target.querySelector(".upload-error-actions")?.remove();
+  if (error && isBitrateLimitError(label)) {
+    target.insertAdjacentHTML("beforeend", `<div class="status-banner error upload-error-actions" role="alert"><span>The original file remains on this computer. Convert it to a lower-bitrate MP4 and select the converted copy. You can also remove the failed Cloudflare placeholder.</span><div class="button-row"><button class="button button-secondary button-small" id="choose-converted-file" type="button">Select converted file</button>${state.upload?.uid ? '<button class="button button-danger button-small" id="remove-failed-upload" type="button" data-busy>Remove failed upload</button>' : ""}</div></div>`);
+    document.querySelector("#choose-converted-file")?.addEventListener("click", () => document.querySelector("#file-input")?.click());
+    document.querySelector("#remove-failed-upload")?.addEventListener("click", removeFailedUploadAfterError);
+  }
+}
+
+async function removeFailedUploadAfterError() {
+  const uid = state.upload?.uid;
+  if (!uid || !window.confirm("Permanently remove this failed upload from Cloudflare Stream?")) return;
+  setBusy(true);
+  try {
+    await api(`/videos/${uid}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE", confirmUid: uid }) });
+    if (state.file) localStorage.removeItem(uploadStorageKey(state.file));
+    state.upload = null;
+    state.file = null;
+    state.fileAnalysis = null;
+    await loadVideos(false);
+    renderUpload();
+    toast("Failed upload removed. Select the converted video when it is ready.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { setBusy(false); }
 }
 
 async function uploadTus(file, ticket, onProgress) {

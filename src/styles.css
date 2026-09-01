@@ -173,6 +173,11 @@ textarea { min-height: 110px; resize: vertical; }
 .upload-icon { width: 62px; height: 62px; border-radius: 50%; display: grid; place-items: center; margin: 0 auto 16px; background: rgba(71, 143, 225, 0.12); color: var(--vivad-blue); font-size: 1.7rem; }
 .selected-file { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--vivad-border); border-radius: 8px; text-align: left; background: #fff; }
 .selected-file strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#file-analysis:empty { display: none; }
+.file-analysis { margin-top: 12px; text-align: left; font-size: 0.86rem; line-height: 1.45; }
+.file-analysis-ready { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 6px; color: #47680f; background: rgba(124, 191, 29, 0.1); }
+.file-analysis-ready strong { white-space: nowrap; }
+.upload-error-actions { margin-top: 12px; align-items: flex-start; flex-direction: column; }
 
 .visibility-options { display: grid; gap: 10px; }
 .visibility-option { position: relative; }
